@@ -12,14 +12,13 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: pq_test
+          POSTGRES_DB: aq_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        ports:
-        - 5432/tcp
+        ports: [ '5432:5432' ]
 
     steps:
     - uses: actions/checkout@v3
@@ -30,5 +29,5 @@ jobs:
     - run: poetry install
     - run: poetry run pytest -v --cov
     - run: poetry run pip install psycopg2
-    - run: poetry run pytest -v --engine "postgresql+psycopg2://postgres:postgres@localhost:5432/pq_test"
+    - run: poetry run pytest -v --engine "postgresql+psycopg2://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/aq_test"
     - run: poetry run coverage report
