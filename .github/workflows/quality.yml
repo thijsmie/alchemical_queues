@@ -1,0 +1,17 @@
+name: QualityChecks
+on: [pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: QualityChecks
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-python@v2
+      with:
+        python-version: 3.x
+    - run: pip install --upgrade poetry
+    - run: poetry install
+    - run: poetry run black --diff --check src
+    - run: poetry run pylint src/alchemical_queues
+    - run: poetry run mypy .

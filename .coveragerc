@@ -1,0 +1,14 @@
+[run]
+source_pkgs=
+    alchemical_queues
+    alchemical_queues.tasks
+
+[paths]
+source =
+    src/alchemical_queues
+
+[report]
+exclude_lines =
+	pragma: no cover
+	if TYPE_CHECKING:
+	pass
