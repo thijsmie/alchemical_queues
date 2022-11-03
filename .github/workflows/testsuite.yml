@@ -13,11 +13,13 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: pq_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
         ports:
-        # will assign a random free host port
         - 5432/tcp
-        # needed because the postgres container does not provide a healthcheck
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
     - uses: actions/checkout@v3
@@ -28,5 +30,5 @@ jobs:
     - run: poetry install
     - run: poetry run pytest -v --cov
     - run: poetry run pip install psycopg2
-    - run: poetry run pytest -v --engine postgresql+psycopg2://postgres:postgres@postgres:5432/pq_test
+    - run: poetry run pytest -v --engine "postgresql+psycopg2://postgres:postgres@postgres:5432/pq_test"
     - run: poetry run coverage report
