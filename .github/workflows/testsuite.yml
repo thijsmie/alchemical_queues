@@ -30,5 +30,5 @@ jobs:
     - run: poetry install
     - run: poetry run pytest -v --cov
     - run: poetry run pip install psycopg2
-    - run: poetry run pytest -v --engine "postgresql+psycopg2://postgres:postgres@postgres:5432/pq_test"
+    - run: poetry run pytest -v --engine "postgresql+psycopg2://postgres:postgres@localhost:5432/pq_test"
     - run: poetry run coverage report
