@@ -6,14 +6,9 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        python-version: [ '3.x', 'pypy3' ]
-        postgres-version: [ '9', 'latest' ]
-
     services:
       postgres:
-        image: postgres:${{ matrix.postgres-version }}
+        image: postgres:latest
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -25,13 +20,13 @@ jobs:
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-python@v2
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
-        python-version: ${{ matrix.python-version }}
-    - run: pip install --upgrade poetry && poetry install && poetry run pytest -v --cov
-      env:
-        PQ_TEST_DB_PORT: ${{ job.services.postgres.ports[5432] }}
-        PQ_TEST_DB_HOST: localhost
-        PQ_TEST_DB_PASS: postgres
+        python-version: 3.x
+    - run: pip install --upgrade poetry
+    - run: poetry install
+    - run: poetry run pytest -v --cov
+    - run: poetry run pip install psycopg2
+    - run: poetry run pytest -v --engine postgresql+psycopg2://postgres:postgres@postgres:5432/pq_test
     - run: poetry run coverage report
