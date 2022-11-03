@@ -49,3 +49,9 @@ def queue_factory(engine_factory):
         q.create()
         return q
     return factory
+
+
+@pytest.fixture(autouse=True)
+def run_around_tests(queue):
+    yield
+    queue.clear()

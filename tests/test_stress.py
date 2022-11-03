@@ -18,13 +18,13 @@ def producer(index, queue_factory, num_samples):
 def consumer(queue: Queue, queue_factory):
     aq: AlchemicalQueues = queue_factory()
     q = aq["test"]
-    t = datetime.now() + timedelta(seconds=0.5)
+    t = datetime.now() + timedelta(seconds=2)
     out = []
     while datetime.now() < t:
         v = q.get()
         if v:
             out.append(v)
-            t = datetime.now() + timedelta(seconds=0.5)
+            t = datetime.now() + timedelta(seconds=2)
 
     queue.put(set(out))
 

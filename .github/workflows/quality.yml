@@ -1,17 +1,23 @@
 name: QualityChecks
-on: [pull_request]
+on: [ pull_request ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     name: QualityChecks
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/setup-python@v2
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
       with:
         python-version: 3.x
     - run: pip install --upgrade poetry
     - run: poetry install
-    - run: poetry run black --diff --check src
-    - run: poetry run pylint src/alchemical_queues
-    - run: poetry run mypy .
+    - run: |
+        echo 'PR_MESSAGE<<EOF' >> $GITHUB_ENV
+        poetry run python meta/run.py pr_commentary >> $GITHUB_ENV
+        echo 'EOF' >> $GITHUB_ENV
+    - uses: mshick/add-pr-comment@v1
+      with:
+        message: ${{ env.PR_MESSAGE }}
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        repo-token-user-login: 'github-actions[bot]'

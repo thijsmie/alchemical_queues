@@ -6,7 +6,7 @@ from typing import Callable, Dict, Any, Union, Tuple, Type, cast
 from dataclasses import dataclass
 
 from sqlalchemy import or_, event, DateTime, Integer, Text, Column, LargeBinary
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import registry
 from sqlalchemy.orm.decl_api import DeclarativeMeta
@@ -104,6 +104,13 @@ class AlchemicalQueues:
         when you are also creating your own tables, e.g. db.create_all()."""
         self._base.metadata.create_all(self._engine)
 
+    def clear(self) -> None:
+        """Clear all entries from all queues. Might fail-silent an update call."""
+
+        with Session(self._engine) as session:
+            session.query(self._model).delete()
+            session.commit()
+
     def _prep_engine_for_get_transaction(self) -> None:
         if self._get_prepped:
             return
@@ -161,7 +168,7 @@ class AlchemicalQueue:
         entry = self._model(
             enqueued_at=datetime.now(),
             schedule_at=schedule_at,
-            expected_at=expected_at,
+            expected_at=expected_at or datetime.min,
             queue_name=self._name,
             data=pickle.dumps(item),
         )
@@ -180,7 +187,7 @@ class AlchemicalQueue:
         with self._session() as session:
             item = (
                 session.query(self._model)
-                .with_for_update(nowait=True, of=self._model, skip_locked=True)
+                .with_for_update(of=self._model, skip_locked=True)
                 .filter(
                     self._model.queue_name == self._name,
                     self._model.dequeued_at == None,  # pylint: disable=C0121
