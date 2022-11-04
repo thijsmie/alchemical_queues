@@ -16,8 +16,7 @@ jobs:
         echo 'PR_MESSAGE<<EOF' >> $GITHUB_ENV
         poetry run python meta/run.py pr_commentary >> $GITHUB_ENV
         echo 'EOF' >> $GITHUB_ENV
-    - uses: mshick/add-pr-comment@v1
+    - uses: thollander/actions-comment-pull-request@v1
       with:
         message: ${{ env.PR_MESSAGE }}
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        repo-token-user-login: 'github-actions[bot]'
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
