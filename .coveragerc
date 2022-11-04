@@ -1,11 +1,10 @@
 [run]
-source_pkgs=
-    alchemical_queues
-    alchemical_queues.tasks
-
-[paths]
-source =
-    src/alchemical_queues
+source=
+    src
+omit=
+    *tests*
+    meta
+    *.venv*
 
 [report]
 exclude_lines =

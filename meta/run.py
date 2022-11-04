@@ -2,14 +2,14 @@ import os
 import io
 import re
 import anybadge
+import coverage
 import subprocess
-import pkg_resources
+import importlib.metadata
 from pathlib import Path
 
 from mypy import api as mypy_api
 from pylint import lint as pylint_api
 from pylint.reporters.text import TextReporter
-from pylint.reporters.json_reporter import JSONReporter
 
 
 this_dir = Path(__file__).parent
@@ -30,7 +30,7 @@ def run_mypy():
     stdout, _, code = mypy_api.run([str(repo_dir)])
 
     if code == 0:
-        return anybadge.Badge(label='mypy', value='no errors', default_color='green', **badge_common)
+        return anybadge.Badge(label='mypy', value='checked', default_color='blue', **badge_common)
 
     m = re.search(r"Found (\d+) error", stdout)
     if m:
@@ -67,19 +67,43 @@ def run_pylint():
 
 
 def run_black():
-    p = subprocess.run(['black', '--check', str(repo_dir / "src")])
+    p = subprocess.call(['black', '--check', str(repo_dir / "src")])
 
-    if p.returncode == 0:
-        return anybadge.Badge('formatting', 'pass', default_color="green", **badge_common)
+    if p == 0:
+        return anybadge.Badge('formatting', 'black', default_color="black", **badge_common)
     else:
         return anybadge.Badge('formatting', 'fail', default_color="red", **badge_common)
 
 
-my_version = pkg_resources.get_distribution('alchemical_queues').version
+def run_tests():
+    p = subprocess.call(["pytest", "-q", "--cov", "src", "."])
+
+    if p == 0:
+        return anybadge.Badge('tests', 'passing', default_color="green", **badge_common)
+    else:
+        return anybadge.Badge('tests', 'failing', default_color="red", **badge_common)
+
+
+def run_coverage():
+    cov = coverage.Coverage()
+    cov.load()
+
+    thresholds = {
+        85: 'red',
+        90: 'orange',
+        95: 'yellow',
+        100: 'green'
+    }
+
+    return anybadge.Badge('coverage', int(cov.report()), value_suffix="%", thresholds=thresholds, **badge_common)
+
+my_version = importlib.metadata.version("alchemical_queues")
 
 write_badge("pypi", anybadge.Badge('pypi', 'alchemical_queues', default_color="blue", **badge_common))
 write_badge("python", anybadge.Badge('python', '3.7|3.8|3.9|3.10|3.11', default_color="blue", **badge_common))
-write_badge("version", anybadge.Badge('version', my_version, default_color="green", **badge_common))
+write_badge("version", anybadge.Badge('version', my_version, semver=True, default_color="green", **badge_common))
 write_badge("mypy", run_mypy())
 write_badge("pylint", run_pylint())
 write_badge("formatting", run_black())
+write_badge("tests", run_tests())
+write_badge("coverage", run_coverage())

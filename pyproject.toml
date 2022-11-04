@@ -25,6 +25,7 @@ pytest-cov = "^4.0.0"
 Sphinx = ">=5"
 Mypy="*"
 pylint=">=2"
+anybadge = "*"
 
 [tool.mypy]
 python_version = "3.7"

@@ -15,9 +15,7 @@ jobs:
         python-version: 3.x
     - run: pip install --upgrade poetry
     - run: poetry install
-      working-directory: meta
-    - run: poetry run python run.py
-      working-directory: meta
+    - run: poetry run python meta/run.py
     - name: Deploy
       uses: peaceiris/actions-gh-pages@v3
       with:

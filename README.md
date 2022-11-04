@@ -1,9 +1,12 @@
 # Alchemical Queues
-[![python](https://img.shields.io/badge/Python-3.7|3.8|3.9|3.10|3.11-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org)
-[![Testsuite](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml/badge.svg?branch=main)](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Checked with mypy](http://www.mypy-lang.org/static/mypy_badge.svg)](http://mypy-lang.org/)
-[![Checked with pyl](https://img.shields.io/badge/pydocstyle-enabled-AD4CD3)](http://www.pydocstyle.org/en/stable/)
+![python versions](/../meta/python.svg)
+![pypi](/../meta/pypi.svg)
+![version](/../meta/version.svg)
+![pylint](/../meta/pylint.svg)
+![formatting](/../meta/formatting.svg)
+![mypy](/../meta/mypy.svg)
+![tests](/../meta/tests.svg)
+![coverage](/../meta/coverage.svg)
 
 Have you got a small web application with a couple users and a database powered by SQLAlchemy? Do you need to run a couple tasks in the background but does it feel like complete overkill to set up a Celery-based system and have to run a broker like Redis or RabbitMQ just for your three automated emails you send per day? Then you are the target audience of *Alchemical Queues*.
 
