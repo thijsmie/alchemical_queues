@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import sys
 import anybadge
 import coverage
 import subprocess
@@ -30,21 +31,30 @@ def run_mypy():
     stdout, _, code = mypy_api.run([str(repo_dir)])
 
     if code == 0:
-        return anybadge.Badge(label='mypy', value='checked', default_color='royalblue', **badge_common)
+        return "royalblue", "checked"
 
     m = re.search(r"Found (\d+) error", stdout)
     if m:
-        errors = f"{m.group(1)} errors"
-    else:
-        errors = "fail"
+        return "red", f"{m.group(1)} errors"
 
-    return anybadge.Badge(label='mypy', value=errors, default_color='red', **badge_common)
+    return "red", "fail"
+
+
+def badge_mypy():
+    color, result = run_mypy()
+    return anybadge.Badge(
+        label="mypy", value=result, default_color=color, **badge_common
+    )
 
 
 def run_pylint():
     out = io.StringIO()
     reporter = TextReporter(out)
-    pylint_api.Run([f"{repo_dir / 'src' / 'alchemical_queues'}", "--score=y", "--reports=n"], reporter=reporter, exit=False)
+    pylint_api.Run(
+        [f"{repo_dir / 'src' / 'alchemical_queues'}", "--score=y", "--reports=n"],
+        reporter=reporter,
+        exit=False,
+    )
 
     m = re.search(r"rated at ([\d\.]+)/", out.getvalue())
 
@@ -56,54 +66,104 @@ def run_pylint():
     except ValueError:
         score = 0.0
 
-    thresholds = {
-        8: 'red',
-        9: 'orange',
-        9.5: 'yellow',
-        10.0: 'green'
-    }
+    return score
 
-    return anybadge.Badge('pylint %', score, thresholds=thresholds, **badge_common)
+
+def badge_pylint():
+    thresholds = {8: "red", 9: "orange", 9.5: "yellow", 10.0: "green"}
+    return anybadge.Badge("pylint", run_pylint(), thresholds=thresholds, **badge_common)
 
 
 def run_black():
-    p = subprocess.call(['black', '--check', str(repo_dir / "src")])
+    return (
+        subprocess.call(
+            ["black", "--check", str(repo_dir / "src")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        == 0
+    )
 
-    if p == 0:
-        return anybadge.Badge('formatting', 'black', default_color="black", **badge_common)
+
+def badge_black():
+    if run_black():
+        return anybadge.Badge(
+            "formatting", "black", default_color="black", **badge_common
+        )
     else:
-        return anybadge.Badge('formatting', 'fail', default_color="red", **badge_common)
-
-
-def run_tests():
-    p = subprocess.call(["pytest", "-q", "--cov", "src", "."])
-
-    if p == 0:
-        return anybadge.Badge('tests', 'passing', default_color="green", **badge_common)
-    else:
-        return anybadge.Badge('tests', 'failing', default_color="red", **badge_common)
+        return anybadge.Badge("formatting", "fail", default_color="red", **badge_common)
 
 
 def run_coverage():
+    subprocess.call(
+        ["pytest", "-q", "--cov", "src", "."],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     cov = coverage.Coverage()
     cov.load()
 
-    thresholds = {
-        85: 'red',
-        90: 'orange',
-        95: 'yellow',
-        100: 'green'
-    }
+    output = io.StringIO()
+    num = cov.report(file=output)
 
-    return anybadge.Badge('coverage', int(cov.report()), value_suffix="%", thresholds=thresholds, **badge_common)
+    return int(num), output.getvalue()
 
-my_version = importlib.metadata.version("alchemical_queues")
 
-write_badge("pypi", anybadge.Badge('pypi', 'alchemical_queues', default_color="royalblue", **badge_common))
-write_badge("python", anybadge.Badge('python', '3.7|3.8|3.9|3.10|3.11', default_color="royalblue", **badge_common))
-write_badge("version", anybadge.Badge('version', my_version, semver=True, default_color="green", **badge_common))
-write_badge("mypy", run_mypy())
-write_badge("pylint", run_pylint())
-write_badge("formatting", run_black())
-write_badge("tests", run_tests())
-write_badge("coverage", run_coverage())
+def badge_coverage():
+    thresholds = {85: "red", 90: "orange", 95: "yellow", 100: "green"}
+    return anybadge.Badge(
+        "coverage",
+        run_coverage()[0],
+        value_suffix="%",
+        thresholds=thresholds,
+        **badge_common,
+    )
+
+
+def run_version():
+    return importlib.metadata.version("alchemical_queues")
+
+
+def badge_version():
+    return anybadge.Badge(
+        "version", run_version(), semver=True, default_color="green", **badge_common
+    )
+
+
+def badges():
+    write_badge(
+        "pypi",
+        anybadge.Badge(
+            "pypi", "alchemical_queues", default_color="royalblue", **badge_common
+        ),
+    )
+    write_badge(
+        "python",
+        anybadge.Badge(
+            "python", "3.7|3.8|3.9|3.10|3.11", default_color="royalblue", **badge_common
+        ),
+    )
+    write_badge("version", badge_version())
+    write_badge("mypy", badge_mypy())
+    write_badge("pylint", badge_pylint())
+    write_badge("formatting", badge_black())
+    write_badge("coverage", badge_coverage())
+
+
+def pr_commentary():
+    return f"""# PR metrics
+
+ - *mypy*: {run_mypy()[1]}
+ - *pylint*: {run_pylint()}
+ - *formatting*: {'good' if run_black() else 'please run black!'}
+
+## Code coverage
+
+{run_coverage()[1]}
+"""
+
+
+if sys.argv[1] == "badges":
+    badges()
+else:
+    print(pr_commentary())
