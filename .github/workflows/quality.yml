@@ -20,3 +20,4 @@ jobs:
       with:
         message: ${{ env.PR_MESSAGE }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        comment_includes: '# PR metrics'

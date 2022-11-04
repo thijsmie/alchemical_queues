@@ -153,9 +153,9 @@ def badges():
 def pr_commentary():
     return f"""# PR metrics
 
- - *mypy*: {run_mypy()[1]}
+ - *mypy*: {run_mypy()[2]}
  - *pylint*: {run_pylint()}
- - *formatting*: {'good' if run_black() else 'please run black!'}
+ - *formatting*: {':+1:' if run_black() else ':-1:'}
 
 ## Code coverage
 ```
