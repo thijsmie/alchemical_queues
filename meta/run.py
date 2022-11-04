@@ -17,7 +17,7 @@ output_dir = this_dir / "output"
 output_dir.mkdir(exist_ok=True)
 repo_dir = this_dir.parent
 os.chdir(repo_dir)
-badge_common = {"num_value_padding_chars": 1}
+badge_common = {"num_value_padding_chars": 0.5}
 
 
 def write_badge(name: str, badge: anybadge.Badge):
@@ -30,7 +30,7 @@ def run_mypy():
     stdout, _, code = mypy_api.run([str(repo_dir)])
 
     if code == 0:
-        return anybadge.Badge(label='mypy', value='checked', default_color='blue', **badge_common)
+        return anybadge.Badge(label='mypy', value='checked', default_color='royalblue', **badge_common)
 
     m = re.search(r"Found (\d+) error", stdout)
     if m:
@@ -99,8 +99,8 @@ def run_coverage():
 
 my_version = importlib.metadata.version("alchemical_queues")
 
-write_badge("pypi", anybadge.Badge('pypi', 'alchemical_queues', default_color="blue", **badge_common))
-write_badge("python", anybadge.Badge('python', '3.7|3.8|3.9|3.10|3.11', default_color="blue", **badge_common))
+write_badge("pypi", anybadge.Badge('pypi', 'alchemical_queues', default_color="royalblue", **badge_common))
+write_badge("python", anybadge.Badge('python', '3.7|3.8|3.9|3.10|3.11', default_color="royalblue", **badge_common))
 write_badge("version", anybadge.Badge('version', my_version, semver=True, default_color="green", **badge_common))
 write_badge("mypy", run_mypy())
 write_badge("pylint", run_pylint())
