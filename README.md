@@ -5,7 +5,7 @@
 ![pylint](/../meta/pylint.svg)
 ![formatting](/../meta/formatting.svg)
 ![mypy](/../meta/mypy.svg)
-![tests](/../meta/tests.svg)
+[![tests](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml/badge.svg)](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml)
 ![coverage](/../meta/coverage.svg)
 
 Have you got a small web application with a couple users and a database powered by SQLAlchemy? Do you need to run a couple tasks in the background but does it feel like complete overkill to set up a Celery-based system and have to run a broker like Redis or RabbitMQ just for your three automated emails you send per day? Then you are the target audience of *Alchemical Queues*.
@@ -18,7 +18,7 @@ Have you got a small web application with a couple users and a database powered 
 *Alchemical Queues* is on PyPi as `alchemical_queues`. You can install via pip or a dependency manager of your choice.
 
 ```bash
-pip install alchemical_queueus
+pip install alchemical_queues
 ```
 
 ## Attributions
