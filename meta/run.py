@@ -158,8 +158,9 @@ def pr_commentary():
  - *formatting*: {'good' if run_black() else 'please run black!'}
 
 ## Code coverage
-
+```
 {run_coverage()[1]}
+```
 """
 
 
