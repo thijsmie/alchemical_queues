@@ -3,7 +3,7 @@
 You can install *Alchemical Queues* using pip:
 
 ```bash
-pip install alchemical_queues
+pip install alchemical-queues
 ```
 
 You can also install from source:
