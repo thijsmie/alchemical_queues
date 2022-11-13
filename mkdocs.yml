@@ -1,0 +1,70 @@
+site_name: Alchemical Queues
+repo_url: https://github.com/thijsmie/alchemical_queues
+repo_name: thijsmie/alchemical_queues
+
+nav:
+  - Introduction:
+    - "index.md"
+  - Usage:
+    - "usage/installation.md"
+    - "usage/tutorial.md"
+    - "usage/flask_example.md"
+    - "usage/advanced.md"
+  - Development:
+    - "development/contributing.md"
+    - "development/postgres.md"
+  - API:
+    - Core:
+      - "api/core/AlchemicalQueues.md"
+      - "api/core/AlchemicalQueue.md"
+      - "api/core/AlchemicalEntry.md"
+      - "api/core/AlchemicalResponse.md"
+    - Tasks:
+      - task: "api/tasks/task.md"
+      - "api/tasks/Worker.md"
+      - "api/tasks/Task.md"
+      - "api/tasks/QueuedTask.md"
+      - "api/tasks/TaskInfo.md"
+      - "api/tasks/TaskException.md"
+
+theme:
+  name: material
+  custom_dir: docs/theme
+  features:
+    - navigation.tabs
+    - navigation.top
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+extra_css:
+- stylesheets/extra.css
+extra:
+  version:
+    provider: mike
+plugins:
+- macros:
+    include_dir: .
+- mike
+- search
+- mkdocstrings:
+    default_handler: python
+    handlers:
+      python:
+        paths: [src]
+        import:
+        - https://docs.python.org/3/objects.inv
+        options:
+          docstring_style: google
+          docstring_options:
+            ignore_init_summary: no
+          separate_signature: no
+          show_source: yes
+          show_root_full_path: no
+          members_order: source
+          filters:
+            - "!^_"
+            - "^__init__$"
+            - "^__getitem__$"
+            - "!^can_replace$"
+copyright: Copyright &copy; 2022 Thijs Miedema

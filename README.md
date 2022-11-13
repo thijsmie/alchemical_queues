@@ -20,7 +20,3 @@ Have you got a small web application with a couple users and a database powered 
 ```bash
 pip install alchemical_queues
 ```
-
-## Attributions
-
-The *Alchemical Queues* project was inspired by the [PQ](https://github.com/malthe/pq) project and borrows quite heavily from it from a design standpoint.

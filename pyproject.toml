@@ -16,22 +16,29 @@ testpaths = "tests"
 python = ">=3.7"
 SQLAlchemy = "^1"
 typing_extensions = "*"
+mkdocs-macros-plugin = "^0.7.0"
 
 [tool.poetry.dev-dependencies]
 SQLAlchemy = {version = "^1", extras = ["mypy"]}
 black = ">=22"
 pytest = ">=7"
 pytest-cov = "^4.0.0"
-Sphinx = ">=5"
 Mypy="*"
 pylint=">=2"
 anybadge = "*"
+mkdocs = ">=1.4"
+mkdocs-material = ">=8"
+mike = ">=1"
+mkdocstrings = { version = ">=0.19", extras = ["python"] }
+
+[tool.poetry.scripts]
+alchemical_worker = "alchemical_queues.tasks.cli:cli"
 
 [tool.mypy]
 python_version = "3.7"
 plugins = "sqlalchemy.ext.mypy.plugin"
 warn_unused_configs = true
-exclude = ["meta/"]
+exclude = ["meta/", "tests/"]
 
 [[tool.mypy.overrides]]
 module = "alchemical_queues.tasks"

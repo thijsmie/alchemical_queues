@@ -27,7 +27,7 @@ def engine(pytestconfig, tmpdir):
 @pytest.fixture
 def queue(engine):
     q = AlchemicalQueues(engine=engine)
-    q.create()
+    q.create_all()
     return q
 
 
@@ -46,7 +46,7 @@ def engine_factory(pytestconfig, tmpdir):
 def queue_factory(engine_factory):
     def factory():
         q = AlchemicalQueues(engine=engine_factory())
-        q.create()
+        q.create_all()
         return q
     return factory
 

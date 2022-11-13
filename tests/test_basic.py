@@ -5,17 +5,44 @@ from alchemical_queues import AlchemicalQueue, AlchemicalQueues
 
 def test_create_queue(engine):
     aq = AlchemicalQueues(engine=engine)
-    aq.create()
+    aq.create_all()
 
 
 def test_create_queue_late_init(engine):
     aq = AlchemicalQueues()
     aq.set_engine(engine)
-    aq.create()
+    aq.create_all()
+
+
+def test_no_multiset(engine):
+    aq = AlchemicalQueues(engine=engine)
+
+    with pytest.raises(Exception):
+        aq.set_engine(engine)
+
+
+def test_no_multiset_2(engine):
+    aq = AlchemicalQueues()
+    aq.set_engine(engine)
+
+    with pytest.raises(Exception):
+        aq.set_engine(engine)
+
+
+def test_no_uninitialized():
+    aq = AlchemicalQueues()
+
+    with pytest.raises(Exception):
+        q = aq.get('test')
+
+
+def test_queue_name(queue: AlchemicalQueues):
+    q = queue.get("test")
+    assert q.name == "test"
 
 
 def test_put_get_data(queue: AlchemicalQueues):
-    q = queue["test"]
+    q = queue.get("test")
     q.put(1)
     job = q.get()
 
@@ -24,8 +51,18 @@ def test_put_get_data(queue: AlchemicalQueues):
     assert job.data == 1
 
 
+def test_put_get_data_typed(queue: AlchemicalQueues):
+    q = queue.get_typed("test", dict)
+    q.put({'1': 1})
+    job = q.get()
+
+    assert job
+    assert repr(job)
+    assert job.data['1'] == 1
+
+
 def test_put_get_data_ordered(queue: AlchemicalQueues):
-    q = queue["test"]
+    q = queue.get("test")
     q.put(1)
     q.put(2)
 
@@ -37,8 +74,8 @@ def test_put_get_data_ordered(queue: AlchemicalQueues):
 
 
 def test_put_get_no_mix(queue: AlchemicalQueues):
-    q1 = queue["test1"]
-    q2 = queue["test2"]
+    q1 = queue.get("test1")
+    q2 = queue.get("test2")
     q1.put(1)
     q2.put(2)
 
@@ -50,21 +87,21 @@ def test_put_get_no_mix(queue: AlchemicalQueues):
 
 
 def test_multi_instance(queue: AlchemicalQueues):
-    q1 = queue["test"]
-    q2 = queue["test"]
+    q1 = queue.get("test")
+    q2 = queue.get("test")
     assert q1 is q2
 
 
 def test_get_dictionary(queue: AlchemicalQueues):
-    q = queue["test"]
+    q = queue.get("test")
     q.put({'foo': 'bar'})
     job = q.get()
     assert job and job.data == {'foo': 'bar'}
 
 
 def test_put_get_clear(queue: AlchemicalQueues):
-    q1 = queue["test1"]
-    q2 = queue["test2"]
+    q1 = queue.get("test1")
+    q2 = queue.get("test2")
     q1.put(1)
     q2.put(2)
     q1.clear()
@@ -75,20 +112,28 @@ def test_put_get_clear(queue: AlchemicalQueues):
     assert q1.get() is None
 
 
-def test_fetch(queue: AlchemicalQueues):
-    q = queue["test"]
-    jid = q.put(1)
+def test_type_errors(queue: AlchemicalQueues):
+    q = queue.get("test")
 
-    entry = q.fetch(jid)
-    assert entry and entry.data == 1
-    assert q.fetch(0xdeadbeef) is None
+    with pytest.raises(TypeError):
+        q.respond("a", "b")
+
+    with pytest.raises(TypeError):
+        q.responses("a")
 
 
-def test_fetch_uneditable(queue: AlchemicalQueues):
-    q = queue["test"]
-    jid = q.put(1)
+def test_queue_size_empty(queue: AlchemicalQueues):
+    q = queue.get("test")
 
-    with pytest.raises(NotImplementedError):
-        entry = q.fetch(jid)
-        assert entry
-        entry.data = 12
+    assert q.empty()
+    assert q.qsize() == 0
+
+    q.put(1)
+
+    assert not q.empty()
+    assert q.qsize() == 1
+
+    q.get()
+
+    assert q.empty()
+    assert q.qsize() == 0

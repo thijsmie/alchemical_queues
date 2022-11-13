@@ -5,7 +5,7 @@ from alchemical_queues import AlchemicalQueues
 
 
 def test_get_noblock(queue: AlchemicalQueues):
-    q = queue["test"]
+    q = queue.get("test")
     assert q.get() == None
     q.put(1)
     entry = q.get()
@@ -14,7 +14,7 @@ def test_get_noblock(queue: AlchemicalQueues):
 
 
 def test_get_scheduled(queue: AlchemicalQueues):
-    q = queue["test"]
+    q = queue.get("test")
     t1 = datetime.now()
     t2 = t1 + timedelta(seconds=0.5)
 
@@ -28,14 +28,12 @@ def test_get_scheduled(queue: AlchemicalQueues):
     assert entry and entry.data == 1
 
 
-def test_get_expected(queue: AlchemicalQueues):
-    q = queue["test"]
-    t1 = datetime.now()
-    t2 = t1 + timedelta(seconds=12)
+def test_get_priority(queue: AlchemicalQueues):
+    q = queue.get("test")
 
-    q.put(1, expected_at=t2)
-    q.put(2, expected_at=t2)
-    q.put(3, expected_at=t1)
+    q.put(1, priority=2)
+    q.put(2, priority=3)
+    q.put(3, priority=1)
     q.put(4)
 
     e1 = q.get()
@@ -45,7 +43,7 @@ def test_get_expected(queue: AlchemicalQueues):
 
     assert q.get() is None
 
-    assert e1 and e1.data == 4
-    assert e2 and e2.data == 3
-    assert e3 and e3.data == 1
-    assert e4 and e4.data == 2
+    assert e1 and e1.data == 2
+    assert e2 and e2.data == 1
+    assert e3 and e3.data == 3
+    assert e4 and e4.data == 4
