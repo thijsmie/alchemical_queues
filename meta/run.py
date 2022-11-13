@@ -143,6 +143,12 @@ def badges():
             "python", "3.7|3.8|3.9|3.10|3.11", default_color="royalblue", **badge_common
         ),
     )
+    write_badge(
+        "documentation",
+        anybadge.Badge(
+            "documentation", "mkdocs", default_color="royalblue", **badge_common
+        ),
+    )
     write_badge("version", badge_version())
     write_badge("mypy", badge_mypy())
     write_badge("pylint", badge_pylint())
@@ -153,7 +159,7 @@ def badges():
 def pr_commentary():
     return f"""# PR metrics
 
- - *mypy*: {run_mypy()[2]}
+ - *mypy*: {run_mypy()[1]}
  - *pylint*: {run_pylint()}
  - *formatting*: {':+1:' if run_black() else ':-1:'}
 
