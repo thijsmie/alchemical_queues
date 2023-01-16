@@ -16,10 +16,10 @@ testpaths = "tests"
 python = ">=3.7"
 SQLAlchemy = "^1"
 typing_extensions = "*"
-mkdocs-macros-plugin = "^0.7.0"
 
 [tool.poetry.dev-dependencies]
 SQLAlchemy = {version = "^1", extras = ["mypy"]}
+mkdocs-macros-plugin = "^0.7.0"
 black = ">=22"
 pytest = ">=7"
 pytest-cov = "^4.0.0"
