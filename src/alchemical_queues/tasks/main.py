@@ -103,7 +103,7 @@ class Worker:
         except KeyboardInterrupt as interrupt:
             # Allow cancellation via interrupt signal
             raise interrupt
-        except Exception as error:  # pylint: disable=broad-except
+        except Exception as error:
             return self._fail(entry_id, data, error)
 
     def work(self) -> NoReturn:

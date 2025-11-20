@@ -2,7 +2,6 @@
 ![python versions](/../meta/python.svg)
 ![pypi](/../meta/pypi.svg)
 ![version](/../meta/version.svg)
-![pylint](/../meta/pylint.svg)
 ![formatting](/../meta/formatting.svg)
 ![mypy](/../meta/mypy.svg)
 [![tests](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml/badge.svg)](https://github.com/thijsmie/alchemical_queues/actions/workflows/testsuite.yml)

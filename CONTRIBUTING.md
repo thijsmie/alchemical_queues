@@ -20,8 +20,8 @@ All types of contributions are encouraged and valued. See the [Table of Contents
   - [Reporting Bugs](#reporting-bugs)
   - [Suggesting Enhancements](#suggesting-enhancements)
   - [Your First Code Contribution](#your-first-code-contribution)
-    - [Format your code with `black`](#format-your-code-with-black)
-    - [Rate your code style using `pylint`](#rate-your-code-style-using-pylint)
+    - [Format your code with `ruff`](#format-your-code-with-ruff)
+    - [Rate your code style using `ruff`](#rate-your-code-style-using-ruff)
     - [Type-check your code with `mypy`](#type-check-your-code-with-mypy)
     - [Run the testsuite with `pytest`](#run-the-testsuite-with-pytest)
 - [Attribution](#attribution)
@@ -118,36 +118,32 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/thijsm
 
 So you've decided to contribute some code to Alchemical Queues! Here a couple quick steps to get your environment up and running.
 
-The environment used for Alchemical Queues is managed by `poetry`, a very useful tool that makes setting up the same environment every time a breeze. Install it easily via pip:
-
-```sh
-$ pip install poetry
-```
+The environment used for Alchemical Queues is managed by `uv`, a very useful tool that makes setting up the same environment every time a breeze. 
 
 Now you can clone the github repository (maybe make a fork first) and install the dependencies.
 
 ```sh
 $ git clone https://github.com/thijsmie/alchemical_queues
 $ cd alchemical_queues
-$ poetry install
+$ uv sync
 ```
 
 You can now make a change somewhere. For the sake of argument, lets just say you add a quick `print("Hi!")` somewhere in the code. Before you contribute this change back to the project you'll need to perform a couple steps:
 
-#### Format your code with `black`
+#### Format your code with `ruff`
 
-Alchemical Queues is formatted using `black`, a zero-config code formatter. Run it like so:
+Alchemical Queues is formatted using `ruff`, a zero-config code formatter. Run it like so:
 
 ```sh
-$ poetry run black src/
+$ uv run ruff format src/
 ```
 
-#### Rate your code style using `pylint`
+#### Rate your code style using `ruff`
 
-To make sure there aren't any unused imports, non-descriptive variable names or other such "code smells" you can run `pylint`.
+To make sure there aren't any unused imports, non-descriptive variable names or other such "code smells" you can run `ruff check`.
 
 ```sh
-$ poetry run pylint src/alchemical_queues/
+$ uv run ruff check src/
 ```
 
 Preferably, the rating should stay '10.0', unless there is a compelling reason not to.
@@ -157,7 +153,7 @@ Preferably, the rating should stay '10.0', unless there is a compelling reason n
 Type hints are an important way to communicate to the user how the Alchemical Queues API works. Use `mypy` to check it:
 
 ```sh
-$ poetry run mypy .
+$ uv run mypy
 ```
 
 #### Run the testsuite with `pytest`
@@ -165,8 +161,8 @@ $ poetry run mypy .
 Testing is important, and it helps you to not accidentally break the code. We test using `pytest`. It also gives some feedback on *coverage*, which counts how many lines of your code are actually tested.
 
 ```sh
-$ poetry run pytest --cov=src .
-$ poetry run coverage report
+$ uv run pytest --cov=src .
+$ uv run coverage report
 ```
 
 ## Attribution
