@@ -5,9 +5,11 @@ repo_name: thijsmie/alchemical_queues
 nav:
   - Introduction:
     - "index.md"
+    - "changelog.md"
   - Usage:
     - "usage/installation.md"
     - "usage/tutorial.md"
+    - "usage/databases.md"
     - "usage/flask_example.md"
     - "usage/advanced.md"
   - Development:
@@ -30,13 +32,53 @@ nav:
 theme:
   name: material
   custom_dir: docs/theme
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   features:
     - navigation.tabs
     - navigation.top
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
 extra_css:
 - stylesheets/extra.css
 extra:
@@ -52,7 +94,7 @@ plugins:
     handlers:
       python:
         paths: [src]
-        import:
+        inventories:
         - https://docs.python.org/3/objects.inv
         options:
           docstring_style: google

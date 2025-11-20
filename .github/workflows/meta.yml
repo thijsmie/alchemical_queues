@@ -10,12 +10,16 @@ jobs:
     name: Meta
     steps:
     - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
       with:
-        python-version: 3.x
-    - run: pip install --upgrade poetry
-    - run: poetry install
-    - run: poetry run python meta/run.py badges
+        version: "latest"
+    - name: Set up Python
+      run: uv python install 3.13
+    - name: Install dependencies
+      run: uv sync --all-groups
+    - name: Generate badges
+      run: uv run python meta/run.py badges
     - name: Deploy
       uses: peaceiris/actions-gh-pages@v3
       with:

@@ -1,4 +1,3 @@
-import pytest
 import time
 from datetime import datetime, timedelta
 from alchemical_queues import AlchemicalQueues
@@ -6,11 +5,11 @@ from alchemical_queues import AlchemicalQueues
 
 def test_get_noblock(queue: AlchemicalQueues):
     q = queue.get("test")
-    assert q.get() == None
+    assert q.get() is None
     q.put(1)
     entry = q.get()
     assert entry and entry.data == 1
-    assert q.get() == None
+    assert q.get() is None
 
 
 def test_get_scheduled(queue: AlchemicalQueues):

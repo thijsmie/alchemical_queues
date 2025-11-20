@@ -1,41 +1,45 @@
-[tool.poetry]
+[project]
 name = "alchemical_queues"
-version = "0.1.1"
+version = "0.1.2"
 description = "Task Queues on pure SQLAlchemy"
-authors = ["Thijs Miedema <mail@tmiedema.com>"]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "sqlalchemy>=2",
+]
+authors = [{ name = "Thijs Miedema", email = "mail@tmiedema.com"}]
 license = "MIT"
-packages = [{include = "alchemical_queues", from = "src" }]
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra --cov-config=.coveragerc --cov-report=xml"
-required_plugins = "pytest-cov"
-testpaths = "tests"
+[build-system]
+requires = ["uv_build>=0.9.10,<0.10.0"]
+build-backend = "uv_build"
 
-[tool.poetry.dependencies]
-python = ">=3.7"
-SQLAlchemy = "^1"
-typing_extensions = "*"
+[dependency-groups]
+dev = [
+    "mypy>=1.18.2",
+    "pytest>=9.0.1",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.5",
+]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-macros-plugin>=1.5.0",
+    "mkdocs-material>=9.7.0",
+    "mkdocstrings>=0.30.1",
+    "mkdocstrings-python>=1.12.0",
+    "mike>=2.1.3",
+]
+meta = [
+    "anybadge>=1.14.0",
+    "coverage>=7.0.0",
+]
 
-[tool.poetry.dev-dependencies]
-SQLAlchemy = {version = "^1", extras = ["mypy"]}
-mkdocs-macros-plugin = "^0.7.0"
-black = ">=22"
-pytest = ">=7"
-pytest-cov = "^4.0.0"
-Mypy="*"
-pylint=">=2"
-anybadge = "*"
-mkdocs = ">=1.4"
-mkdocs-material = ">=8"
-mike = ">=1"
-mkdocstrings = { version = ">=0.19", extras = ["python"] }
 
 [tool.poetry.scripts]
 alchemical_worker = "alchemical_queues.tasks.cli:cli"
 
 [tool.mypy]
-python_version = "3.7"
+python_version = "3.10"
 plugins = "sqlalchemy.ext.mypy.plugin"
 warn_unused_configs = true
 exclude = ["meta/", "tests/"]
@@ -54,7 +58,3 @@ warn_unreachable = true
 
 [tool.pylint.'MESSAGES CONTROL']
 disable = ["R0903", "C0301"]
-
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"

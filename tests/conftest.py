@@ -1,5 +1,4 @@
 import pytest
-import logging
 import sys
 
 from pathlib import Path
@@ -8,19 +7,25 @@ from alchemical_queues import AlchemicalQueues
 
 
 # Supporting modules
-sys.path.insert(0, str(Path(__file__).parent / 'test_tasker'))
+sys.path.insert(0, str(Path(__file__).parent / "test_tasker"))
 
 
 def pytest_addoption(parser):
-    parser.addoption("-E", "--engine", action="store", type=str, help="Define the sqlite database engine URL. When not specified use a temporary SQLite file")
+    parser.addoption(
+        "-E",
+        "--engine",
+        action="store",
+        type=str,
+        help="Define the sqlite database engine URL. When not specified use a temporary SQLite file",
+    )
 
 
 @pytest.fixture
 def engine(pytestconfig, tmpdir):
-    if pytestconfig.getoption('engine') is not None:
-        return create_engine(pytestconfig.getoption('engine'))
+    if pytestconfig.getoption("engine") is not None:
+        return create_engine(pytestconfig.getoption("engine"))
     else:
-        path = Path(str(tmpdir)).absolute() / 'test.db'
+        path = Path(str(tmpdir)).absolute() / "test.db"
         return create_engine(f"sqlite:///{path}")
 
 
@@ -34,11 +39,12 @@ def queue(engine):
 @pytest.fixture
 def engine_factory(pytestconfig, tmpdir):
     def factory():
-        if pytestconfig.getoption('engine') is not None:
-            return create_engine(pytestconfig.getoption('engine'))
+        if pytestconfig.getoption("engine") is not None:
+            return create_engine(pytestconfig.getoption("engine"))
         else:
-            path = Path(str(tmpdir)).absolute() / 'test.db'
+            path = Path(str(tmpdir)).absolute() / "test.db"
             return create_engine(f"sqlite:///{path}")
+
     return factory
 
 
@@ -48,6 +54,7 @@ def queue_factory(engine_factory):
         q = AlchemicalQueues(engine=engine_factory())
         q.create_all()
         return q
+
     return factory
 
 

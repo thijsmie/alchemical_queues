@@ -9,8 +9,6 @@ import importlib.metadata
 from pathlib import Path
 
 from mypy import api as mypy_api
-from pylint import lint as pylint_api
-from pylint.reporters.text import TextReporter
 
 
 this_dir = Path(__file__).parent
@@ -28,7 +26,7 @@ def write_badge(name: str, badge: anybadge.Badge):
 
 
 def run_mypy():
-    stdout, _, code = mypy_api.run([str(repo_dir)])
+    stdout, _, code = mypy_api.run([str(repo_dir / "src")])
 
     if code == 0:
         return "royalblue", "checked"
@@ -47,55 +45,22 @@ def badge_mypy():
     )
 
 
-def run_pylint():
-    out = io.StringIO()
-    reporter = TextReporter(out)
-    pylint_api.Run(
-        [f"{repo_dir / 'src' / 'alchemical_queues'}", "--score=y", "--reports=n"],
-        reporter=reporter,
-        exit=False,
+def run_ruff():
+    format_result = subprocess.run(
+        ["ruff", "format", "--check", str(repo_dir / "src")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-
-    m = re.search(r"rated at ([\d\.]+)/", out.getvalue())
-
-    try:
-        if m:
-            score = float(m.group(1))
-        else:
-            score = 0.0
-    except ValueError:
-        score = 0.0
-
-    return score
-
-
-def badge_pylint():
-    thresholds = {8: "red", 9: "orange", 9.5: "yellow", 10.0: "green"}
-    return anybadge.Badge("pylint", run_pylint(), thresholds=thresholds, **badge_common)
-
-
-def run_black():
-    return (
-        subprocess.call(
-            ["black", "--check", str(repo_dir / "src")],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        == 0
+    check_result = subprocess.run(
+        ["ruff", "check", str(repo_dir / "src")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
-
-
-def badge_black():
-    if run_black():
-        return anybadge.Badge(
-            "formatting", "black", default_color="black", **badge_common
-        )
-    else:
-        return anybadge.Badge("formatting", "fail", default_color="red", **badge_common)
+    return format_result.returncode == 0 and check_result.returncode == 0
 
 
 def run_coverage():
-    subprocess.call(
+    subprocess.run(
         ["pytest", "-q", "--cov", "src", "."],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -111,22 +76,33 @@ def run_coverage():
 
 def badge_coverage():
     thresholds = {85: "red", 90: "orange", 95: "yellow", 100: "green"}
-    return anybadge.Badge(
-        "coverage",
-        run_coverage()[0],
-        value_suffix="%",
-        thresholds=thresholds,
-        **badge_common,
-    )
+    try:
+        coverage_pct, _ = run_coverage()
+        return anybadge.Badge(
+            "coverage",
+            coverage_pct,
+            value_suffix="%",
+            thresholds=thresholds,
+            **badge_common,
+        )
+    except Exception as e:
+        print(f"Warning: Failed to generate coverage badge: {e}", file=sys.stderr)
+        return anybadge.Badge(
+            "coverage", "unknown", default_color="lightgrey", **badge_common
+        )
 
 
 def run_version():
-    return importlib.metadata.version("alchemical_queues")
+    try:
+        return importlib.metadata.version("alchemical_queues")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def badge_version():
+    version = run_version()
     return anybadge.Badge(
-        "version", run_version(), semver=True, default_color="green", **badge_common
+        "version", version, semver=True, default_color="green", **badge_common
     )
 
 
@@ -140,7 +116,7 @@ def badges():
     write_badge(
         "python",
         anybadge.Badge(
-            "python", "3.7|3.8|3.9|3.10|3.11", default_color="royalblue", **badge_common
+            "python", "3.10|3.11|3.12|3.13", default_color="royalblue", **badge_common
         ),
     )
     write_badge(
@@ -151,26 +127,39 @@ def badges():
     )
     write_badge("version", badge_version())
     write_badge("mypy", badge_mypy())
-    write_badge("pylint", badge_pylint())
-    write_badge("formatting", badge_black())
     write_badge("coverage", badge_coverage())
 
 
 def pr_commentary():
+    mypy_status = run_mypy()[1]
+    ruff_status = ":+1:" if run_ruff() else ":-1:"
+    
+    try:
+        coverage_pct, coverage_report = run_coverage()
+    except Exception as e:
+        coverage_report = f"Failed to generate coverage: {e}"
+    
     return f"""# PR metrics
 
- - *mypy*: {run_mypy()[1]}
- - *pylint*: {run_pylint()}
- - *formatting*: {':+1:' if run_black() else ':-1:'}
+ - *mypy*: {mypy_status}
+ - *formatting*: {ruff_status}
 
 ## Code coverage
 ```
-{run_coverage()[1]}
+{coverage_report}
 ```
 """
 
 
-if sys.argv[1] == "badges":
-    badges()
-else:
-    print(pr_commentary())
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python run.py [badges|pr_commentary]", file=sys.stderr)
+        sys.exit(1)
+    
+    if sys.argv[1] == "badges":
+        badges()
+    elif sys.argv[1] == "pr_commentary":
+        print(pr_commentary())
+    else:
+        print(f"Unknown command: {sys.argv[1]}", file=sys.stderr)
+        sys.exit(1)

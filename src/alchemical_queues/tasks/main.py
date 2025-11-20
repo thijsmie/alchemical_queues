@@ -262,7 +262,7 @@ class Tasker(Generic[Param, RValue]):
 
 
 def task(
-    function: Callable[Concatenate[TaskInfo, Param], RValue]
+    function: Callable[Concatenate[TaskInfo, Param], RValue],
 ) -> Tasker[Param, RValue]:
     """Decorator to turn a function into a runnable task.
 

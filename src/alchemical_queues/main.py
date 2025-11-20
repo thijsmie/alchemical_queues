@@ -2,32 +2,60 @@
 
 import pickle
 from datetime import datetime
-from typing import Dict, List, Any, Union, Type, cast, Generic, TypeVar
+from typing import Dict, List, Any, Type, cast, Generic, TypeVar, TYPE_CHECKING
 
-from sqlalchemy import or_, event, DateTime, Integer, Text, Column, LargeBinary
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import (
+    delete,
+    or_,
+    func,
+    DateTime,
+    Integer,
+    Text,
+    Column,
+    LargeBinary,
+    select,
+)
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import registry
-from sqlalchemy.orm.decl_api import DeclarativeMeta
 
 
 T = TypeVar("T")
 
 
-def _generate_models(queue_tablename: str, response_tablename: str):
-    mapper_registry = registry()
+if TYPE_CHECKING:
 
-    class Base(metaclass=DeclarativeMeta):
-        """SQLAlchemy model base class"""
+    class _Entry(DeclarativeBase):
+        entry_id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
+        queue_name = Column(Text, nullable=False, index=True)
 
-        __abstract__ = True
+        enqueued_at = Column(DateTime(timezone=True), nullable=False)
+        schedule_at = Column(DateTime(timezone=True), nullable=True)
+        priority = Column(Integer, nullable=False)
+        data = Column(LargeBinary)
 
-        registry = mapper_registry
-        metadata = mapper_registry.metadata
+    class _Response(DeclarativeBase):
+        response_id = Column(
+            Integer, primary_key=True, nullable=False, autoincrement=True
+        )
+        queue_name = Column(Text, nullable=False, index=True)
+        entry_id = Column(Integer, index=True, nullable=False)
 
-        __init__ = mapper_registry.constructor
+        delivered_at = Column(DateTime(timezone=True), nullable=False)
+        cleanup_at = Column(DateTime(timezone=True), nullable=True)
+        data = Column(LargeBinary)
 
-    class Entry(Base):
+
+def _generate_models(
+    queue_tablename: str,
+    response_tablename: str,
+    base: Type[DeclarativeBase] | None = None,
+) -> tuple[Type[DeclarativeBase], Type["_Entry"], Type["_Response"]]:
+    if base is None:
+
+        class base(DeclarativeBase):  # type: ignore[no-redef]
+            pass
+
+    class Entry(base):  # type: ignore[misc,valid-type]
         """SQLAlchemy model for a Queue Entry."""
 
         __tablename__: str = queue_tablename
@@ -40,7 +68,7 @@ def _generate_models(queue_tablename: str, response_tablename: str):
         priority = Column(Integer, nullable=False)
         data = Column(LargeBinary)
 
-    class Response(Base):
+    class Response(base):  # type: ignore[misc,valid-type]
         """SQLAlchemy model for a Task Result."""
 
         __tablename__: str = response_tablename
@@ -55,7 +83,7 @@ def _generate_models(queue_tablename: str, response_tablename: str):
         cleanup_at = Column(DateTime(timezone=True), nullable=True)
         data = Column(LargeBinary)
 
-    return Base, Entry, Response  # type: ignore
+    return base, Entry, Response  # type: ignore
 
 
 class AlchemicalQueues:
@@ -63,9 +91,10 @@ class AlchemicalQueues:
 
     def __init__(
         self,
-        engine: Union[Engine, None] = None,
+        engine: Engine | None = None,
         queue_tablename: str = "AlchemicalQueue",
         response_tablename: str = "AlchemicalResult",
+        base: Type[DeclarativeBase] | None = None,
     ) -> None:
         """Create the main queue entrypoint object.
 
@@ -78,7 +107,7 @@ class AlchemicalQueues:
         self._engine = engine
         self._get_prepped = False
         self._base, self._qmodel, self._rmodel = _generate_models(
-            queue_tablename, response_tablename
+            queue_tablename, response_tablename, base
         )
         self._queues: Dict[str, "AlchemicalQueue"] = {}
 
@@ -102,30 +131,20 @@ class AlchemicalQueues:
     def create_all(self) -> None:
         """Create the needed SQLAlchemy table. You would normally call this
         when you are also creating your own tables, e.g. db.create_all()."""
+        if not self._engine:
+            raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
+
         self._base.metadata.create_all(self._engine)
 
     def clear(self) -> None:
         """Clear all entries from all queues and task results. Might fail-silent an update call."""
-
-        with Session(self._engine) as session:
-            session.query(self._qmodel).delete()
-            session.query(self._rmodel).delete()
-            session.commit()
-
-    def _prep_engine_for_get_transaction(self) -> None:
-        if self._get_prepped:
-            return
-
         if not self._engine:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
-        self._get_prepped = True
-
-        if self._engine.driver == "pysqlite":
-
-            @event.listens_for(self._engine, "begin")
-            def do_begin(conn):
-                conn.exec_driver_sql("BEGIN EXCLUSIVE")
+        with Session(self._engine) as session:
+            session.execute(delete(self._qmodel))
+            session.execute(delete(self._rmodel))
+            session.commit()
 
     def get(self, key: str) -> "AlchemicalQueue[Any]":
         """Get a Queue instance
@@ -136,8 +155,8 @@ class AlchemicalQueues:
         Returns:
             AlchemicalQueue
         """
-        self._prep_engine_for_get_transaction()
-        assert self._engine
+        if not self._engine:
+            raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._queues:
             self._queues[key] = AlchemicalQueue(
@@ -156,7 +175,6 @@ class AlchemicalQueues:
         Returns:
             AlchemicalQueue[T]
         """
-        # pylint: disable=unused-argument
         return cast(AlchemicalQueue[T], self.get(key))
 
 
@@ -164,17 +182,19 @@ class AlchemicalQueue(Generic[T]):
     """An Alchemical Queue. It is not intended to be initialized by a user, go through
     [AlchemicalQueues][alchemical_queues.AlchemicalQueues] instead."""
 
-    def __init__(self, engine: Engine, model, response_model, name: str):
+    def __init__(
+        self,
+        engine: Engine,
+        model: Type["_Entry"],
+        response_model: Type["_Response"],
+        name: str,
+    ):
         self._engine = engine
         self._model = model
         self._response_model = response_model
         self._name = name
         self._session = sessionmaker(
-            engine,
-            autocommit=False,
-            autoflush=False,
-            expire_on_commit=False,
-            future=True,
+            engine, autocommit=False, autoflush=False, expire_on_commit=True
         )
 
     @property
@@ -186,7 +206,7 @@ class AlchemicalQueue(Generic[T]):
         self,
         item: T,
         *,
-        schedule_at: Union[datetime, None] = None,
+        schedule_at: datetime | None = None,
         priority: int = 0,
     ) -> "AlchemicalEntry[T]":
         """Put an entry into the AlchemicalQueue
@@ -211,11 +231,16 @@ class AlchemicalQueue(Generic[T]):
 
         with self._session() as session:
             session.add(entry)
+            session.flush()  # Flush to get the entry_id assigned
+
+            # Create the result before commit to access attributes while object is still in session
+            result = AlchemicalEntry(entry, item)
+
             session.commit()
 
-            return AlchemicalEntry(entry, item)
+        return result
 
-    def get(self) -> Union["AlchemicalEntry[T]", None]:
+    def get(self) -> "AlchemicalEntry[T] | None":
         """Get the highest priority entry out from the queue
 
         Returns:
@@ -225,27 +250,63 @@ class AlchemicalQueue(Generic[T]):
         timestamp = datetime.now()
 
         with self._session() as session:
-            item = (
-                session.query(self._model)
-                .with_for_update(of=self._model, skip_locked=True)
-                .filter(
-                    self._model.queue_name == self._name,
-                    or_(
-                        self._model.schedule_at == None,  # pylint: disable=C0121
-                        self._model.schedule_at <= timestamp,  # type: ignore
-                    ),
-                )
-                .order_by(self._model.priority.desc(), self._model.entry_id.asc())  # type: ignore
-                .limit(1)
-                .first()
+            # Use different strategies based on database support for SKIP LOCKED
+            dialect_name = (
+                session.bind.dialect.name
+                if session.bind and session.bind.dialect
+                else ""
             )
+
+            if dialect_name in ("postgresql", "mysql", "oracle"):
+                # For databases that support SKIP LOCKED with DELETE, use it for better concurrency
+                # Build the subquery with FOR UPDATE SKIP LOCKED
+                subquery = (
+                    select(self._model.entry_id)
+                    .filter(
+                        self._model.queue_name == self._name,
+                        or_(
+                            self._model.schedule_at == None,  # noqa: E711
+                            self._model.schedule_at <= timestamp,  # type: ignore
+                        ),
+                    )
+                    .order_by(self._model.priority.desc(), self._model.entry_id.asc())  # type: ignore
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
+                    .scalar_subquery()
+                )
+            else:
+                # For SQLite and other databases, use plain subquery (still atomic via DELETE)
+                subquery = (
+                    select(self._model.entry_id)
+                    .filter(
+                        self._model.queue_name == self._name,
+                        or_(
+                            self._model.schedule_at == None,  # noqa: E711
+                            self._model.schedule_at <= timestamp,  # type: ignore
+                        ),
+                    )
+                    .order_by(self._model.priority.desc(), self._model.entry_id.asc())  # type: ignore
+                    .limit(1)
+                    .scalar_subquery()
+                )
+
+            # Atomically delete and return the row
+            delete_stmt = (
+                delete(self._model)
+                .where(self._model.entry_id == subquery)
+                .returning(self._model)
+            )
+
+            result = session.execute(delete_stmt)
+            item = result.fetchone()
 
             if item is None:
                 session.rollback()
                 return None
 
-            entry = AlchemicalEntry(item, pickle.loads(item.data))
-            session.delete(item)
+            # item is a Row object, access the model via item[0]
+            model_obj = item[0]
+            entry = AlchemicalEntry(model_obj, pickle.loads(model_obj.data))
             session.commit()
 
         return entry
@@ -258,38 +319,33 @@ class AlchemicalQueue(Generic[T]):
         """
         with self._session() as session:
             return (
-                session.query(self._model)
-                .where(self._model.queue_name == self._name)
-                .count()
+                session.scalar(
+                    select(func.count())
+                    .select_from(self._model)
+                    .where(self._model.queue_name == self._name)
+                )
+                or 0
             )
 
     def empty(self) -> bool:
-        """Return `True` if the Queue is emtpy, `False` otherwise. More efficient than
-        `qsize() > 0`.
+        """Return `True` if the Queue is emtpy, `False` otherwise.
 
         Returns:
             bool: wether the Queue is empty.
         """
-        with self._session() as session:
-            return (
-                session.query(self._model)
-                .where(self._model.queue_name == self._name)
-                .limit(1)
-                .count()
-                == 0
-            )
+        return self.qsize() == 0
 
     def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
 
         with self._session() as session:
-            session.query(self._model).where(
-                self._model.queue_name == self._name
-            ).delete()
+            session.execute(
+                delete(self._model).where(self._model.queue_name == self._name)
+            )
             session.commit()
 
     def respond(
-        self, entry_id: int, response: Any, cleanup_at: Union[datetime, None] = None
+        self, entry_id: int, response: Any, cleanup_at: datetime | None = None
     ) -> "AlchemicalResponse":
         """Send a response to a queue entry. Used to implement task queues.
 
@@ -331,19 +387,19 @@ class AlchemicalQueue(Generic[T]):
 
         with self._session() as session:
             now = datetime.now()
-
-            session.query(self._response_model).where(
-                self._response_model.cleanup_at != None,  # pylint: disable=C0121
-                self._response_model.cleanup_at < now,
-            ).delete()
-            entries = (
-                session.query(self._response_model)
-                .where(
+            session.execute(
+                delete(self._response_model).where(
+                    self._response_model.cleanup_at != None,  # noqa: E711
+                    self._response_model.cleanup_at < now,
+                )
+            )
+            session.commit()
+            entries = session.scalars(
+                select(self._response_model).where(
                     self._response_model.queue_name == self._name,
                     self._response_model.entry_id == entry_id,
                 )
-                .all()
-            )
+            ).all()
             return [AlchemicalResponse(e, pickle.loads(e.data)) for e in entries]
 
 
@@ -369,7 +425,7 @@ class AlchemicalEntry(Generic[T]):
 
         self.entry_id: int = entry.entry_id
         self.enqueued_at: datetime = entry.enqueued_at
-        self.schedule_at: Union[datetime, None] = entry.schedule_at
+        self.schedule_at: datetime | None = entry.schedule_at
         self.priority: int = entry.priority
         self.data: T = data
 
