@@ -1,0 +1,7 @@
+
+/* Custom colors for Alchemical Queues docs */
+:root > * {
+  --md-primary-fg-color:        #7D8F69;
+  --md-primary-fg-color--light: #A9AF7E;
+  --md-primary-fg-color--dark:  #557153;
+}
