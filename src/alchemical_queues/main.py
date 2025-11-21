@@ -328,7 +328,7 @@ class AlchemicalQueue(Generic[T]):
             )
 
     def empty(self) -> bool:
-        """Return `True` if the Queue is emtpy, `False` otherwise.
+        """Return `True` if the Queue is empty, `False` otherwise.
 
         Returns:
             bool: wether the Queue is empty.
