@@ -265,7 +265,7 @@ class AlchemicalQueue(Generic[T]):
                     .filter(
                         self._model.queue_name == self._name,
                         or_(
-                            self._model.schedule_at == None,  # noqa: E711
+                            self._model.schedule_at.is_(None),
                             self._model.schedule_at <= timestamp,  # type: ignore
                         ),
                     )
@@ -281,7 +281,7 @@ class AlchemicalQueue(Generic[T]):
                     .filter(
                         self._model.queue_name == self._name,
                         or_(
-                            self._model.schedule_at == None,  # noqa: E711
+                            self._model.schedule_at.is_(None),
                             self._model.schedule_at <= timestamp,  # type: ignore
                         ),
                     )
@@ -389,7 +389,7 @@ class AlchemicalQueue(Generic[T]):
             now = datetime.now()
             session.execute(
                 delete(self._response_model).where(
-                    self._response_model.cleanup_at != None,  # noqa: E711
+                    self._response_model.cleanup_at.is_not(None),
                     self._response_model.cleanup_at < now,
                 )
             )
