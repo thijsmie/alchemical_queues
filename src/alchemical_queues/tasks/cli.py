@@ -1,4 +1,5 @@
-"""The command line interface `alchemical_worker`. """
+"""The command line interface `alchemical_worker`."""
+
 import argparse
 from datetime import timedelta
 from sqlalchemy.engine import create_engine

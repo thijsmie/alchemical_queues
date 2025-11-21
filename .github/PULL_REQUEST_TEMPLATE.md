@@ -13,6 +13,6 @@ Please make sure the following requirements are complete:
 
 - [ ] Tests for the changes have been added (for bug fixes / features)
 - [ ] Docs have been reviewed and added / updated if needed (for bug fixes / features)
-- [ ] You have formatted the code with black
-- [ ] You have checked the code with pylint and mypy
+- [ ] You have formatted the code with ruff
+- [ ] You have checked the code with ruff and mypy
 - [ ] You ran all tests with pytest

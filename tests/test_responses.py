@@ -1,6 +1,4 @@
-from datetime import datetime
-import pytest
-from alchemical_queues import AlchemicalQueue, AlchemicalQueues
+from alchemical_queues import AlchemicalQueues
 
 
 def test_respond(queue: AlchemicalQueues):
@@ -19,4 +17,3 @@ def test_respond(queue: AlchemicalQueues):
     assert response.data == "test"
     assert response.delivered_at > job.enqueued_at
     assert response.cleanup_at is None
-

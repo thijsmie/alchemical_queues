@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Callable
 from alchemical_queues import AlchemicalQueues
 
@@ -17,4 +16,3 @@ def test_put_get_data(queue_factory: Callable[[], AlchemicalQueues]) -> None:
     q1.put(1)
     entry = q2.get()
     assert entry and entry.data == 1
-

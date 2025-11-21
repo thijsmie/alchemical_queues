@@ -1,7 +1,6 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 import time
 import signal
-import time
 from threading import Thread
 from alchemical_queues import AlchemicalQueues, AlchemicalQueue, tasks
 
@@ -69,22 +68,22 @@ def test_task_namefail(queue: AlchemicalQueues):
 def schedule_something_soon(q: AlchemicalQueue, r: dict):
     time.sleep(1)
     v = increment(12).schedule(q, max_retries=1)
-    r['v'] = v
+    r["v"] = v
 
 
 def test_task_work_one_delayed(queue: AlchemicalQueues):
     q = queue.get("tasks")
     r = {}
-    t = Thread(target=schedule_something_soon, args=(q,r))
+    t = Thread(target=schedule_something_soon, args=(q, r))
     t.start()
     tasks.Worker(q).work_one(True)
-    assert r['v'].result == 13
+    assert r["v"].result == 13
 
 
 def test_task_work_delayed(queue: AlchemicalQueues):
     q = queue.get("tasks")
     r = {}
-    t = Thread(target=schedule_something_soon, args=(q,r))
+    t = Thread(target=schedule_something_soon, args=(q, r))
     t.start()
     h = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, handler)
@@ -93,6 +92,6 @@ def test_task_work_delayed(queue: AlchemicalQueues):
     try:
         tasks.Worker(q).work()
     except KeyboardInterrupt:
-        assert r['v'].result == 13
+        assert r["v"].result == 13
     finally:
         signal.signal(signal.SIGALRM, h)

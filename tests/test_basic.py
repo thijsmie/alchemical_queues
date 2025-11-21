@@ -1,6 +1,5 @@
-from datetime import datetime
 import pytest
-from alchemical_queues import AlchemicalQueue, AlchemicalQueues
+from alchemical_queues import AlchemicalQueues
 
 
 def test_create_queue(engine):
@@ -33,7 +32,7 @@ def test_no_uninitialized():
     aq = AlchemicalQueues()
 
     with pytest.raises(Exception):
-        q = aq.get('test')
+        aq.get("test")
 
 
 def test_queue_name(queue: AlchemicalQueues):
@@ -53,12 +52,12 @@ def test_put_get_data(queue: AlchemicalQueues):
 
 def test_put_get_data_typed(queue: AlchemicalQueues):
     q = queue.get_typed("test", dict)
-    q.put({'1': 1})
+    q.put({"1": 1})
     job = q.get()
 
     assert job
     assert repr(job)
-    assert job.data['1'] == 1
+    assert job.data["1"] == 1
 
 
 def test_put_get_data_ordered(queue: AlchemicalQueues):
@@ -94,9 +93,9 @@ def test_multi_instance(queue: AlchemicalQueues):
 
 def test_get_dictionary(queue: AlchemicalQueues):
     q = queue.get("test")
-    q.put({'foo': 'bar'})
+    q.put({"foo": "bar"})
     job = q.get()
-    assert job and job.data == {'foo': 'bar'}
+    assert job and job.data == {"foo": "bar"}
 
 
 def test_put_get_clear(queue: AlchemicalQueues):

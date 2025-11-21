@@ -103,7 +103,7 @@ class Worker:
         except KeyboardInterrupt as interrupt:
             # Allow cancellation via interrupt signal
             raise interrupt
-        except Exception as error:  # pylint: disable=broad-except
+        except Exception as error:
             return self._fail(entry_id, data, error)
 
     def work(self) -> NoReturn:
@@ -262,7 +262,7 @@ class Tasker(Generic[Param, RValue]):
 
 
 def task(
-    function: Callable[Concatenate[TaskInfo, Param], RValue]
+    function: Callable[Concatenate[TaskInfo, Param], RValue],
 ) -> Tasker[Param, RValue]:
     """Decorator to turn a function into a runnable task.
 
