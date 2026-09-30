@@ -20,6 +20,7 @@ jobs:
         uv run python meta/run.py pr_commentary >> $GITHUB_ENV
         echo 'EOF' >> $GITHUB_ENV
     - uses: thollander/actions-comment-pull-request@v1
+      if: github.event_name == 'pull_request'
       with:
         message: ${{ env.PR_MESSAGE }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
