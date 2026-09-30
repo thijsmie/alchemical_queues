@@ -67,3 +67,19 @@ from alchemical_queues.tasks import Worker
 
 Worker(queues.get("task-queue")).work()
 ```
+
+## Sharing a declarative base
+
+If your application already has its own SQLAlchemy `DeclarativeBase` (e.g. `db.Model` from Flask-SQLAlchemy), you can pass it to `AlchemicalQueues` so its tables share that registry and metadata instead of getting their own.
+
+```python
+from sqlalchemy.orm import DeclarativeBase
+
+class Base(DeclarativeBase):
+    pass
+
+queues = AlchemicalQueues(engine, base=Base)
+queues.create_all()  # also creates any other tables defined on Base
+```
+
+This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way.

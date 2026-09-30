@@ -160,6 +160,4 @@ cython_debug/
 #.idea/
 
 output
-poetry.toml
-meta/poetry.toml
-meta/poetry.lock
+.python-version

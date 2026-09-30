@@ -1,5 +1,6 @@
 from datetime import datetime
 import pytest
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from alchemical_queues import AlchemicalQueue, AlchemicalQueues
 
 
@@ -137,3 +138,50 @@ def test_queue_size_empty(queue: AlchemicalQueues):
 
     assert q.empty()
     assert q.qsize() == 0
+
+
+def test_entry_id_not_reused_after_clear(queue: AlchemicalQueues):
+    # Regression test: SQLite reuses a table's rowids once it is emptied unless
+    # told not to, which would let a later entry silently collide with an
+    # earlier, unrelated one's entry_id.
+    q = queue.get("test")
+
+    first = q.put(1)
+    q.clear()
+    second = q.put(2)
+
+    assert second.entry_id != first.entry_id
+    assert second.entry_id > first.entry_id
+
+
+def test_entry_id_not_reused_after_drain(queue: AlchemicalQueues):
+    q = queue.get("test")
+
+    first = q.put(1)
+    assert q.get() is not None
+
+    second = q.put(2)
+
+    assert second.entry_id != first.entry_id
+
+
+def test_custom_declarative_base(engine):
+    # AlchemicalQueues can attach its tables to an existing declarative base,
+    # so they share a registry/metadata with tables defined elsewhere in the
+    # application (e.g. Flask-SQLAlchemy's `db.Model`).
+    class AppBase(DeclarativeBase):
+        pass
+
+    class Widget(AppBase):
+        __tablename__ = "widget"
+        id: Mapped[int] = mapped_column(primary_key=True)
+
+    aq = AlchemicalQueues(engine=engine, base=AppBase)
+    aq.create_all()
+
+    assert aq._base is AppBase  # pylint: disable=protected-access
+    assert "widget" in AppBase.metadata.tables
+
+    q = aq.get("test")
+    q.put(1)
+    assert q.qsize() == 1
