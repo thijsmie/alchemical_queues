@@ -4,56 +4,58 @@ import pickle
 from datetime import datetime
 from typing import Dict, List, Any, Union, Type, cast, Generic, TypeVar
 
-from sqlalchemy import or_, event, DateTime, Integer, Text, Column, LargeBinary
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import or_, event, DateTime, Integer, Text, LargeBinary
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import registry
-from sqlalchemy.orm.decl_api import DeclarativeMeta
 
 
 T = TypeVar("T")
 
 
 def _generate_models(queue_tablename: str, response_tablename: str):
-    mapper_registry = registry()
-
-    class Base(metaclass=DeclarativeMeta):
+    # Each call gets its own DeclarativeBase, which implicitly creates its own
+    # registry and metadata, so separate AlchemicalQueues instances never
+    # clash even if they happen to use the same table names.
+    class Base(DeclarativeBase):
         """SQLAlchemy model base class"""
-
-        __abstract__ = True
-
-        registry = mapper_registry
-        metadata = mapper_registry.metadata
-
-        __init__ = mapper_registry.constructor
 
     class Entry(Base):
         """SQLAlchemy model for a Queue Entry."""
 
         __tablename__: str = queue_tablename
 
-        entry_id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
-        queue_name = Column(Text, nullable=False, index=True)
+        entry_id: Mapped[int] = mapped_column(
+            Integer, primary_key=True, nullable=False, autoincrement=True
+        )
+        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
 
-        enqueued_at = Column(DateTime(timezone=True), nullable=False)
-        schedule_at = Column(DateTime(timezone=True), nullable=True)
-        priority = Column(Integer, nullable=False)
-        data = Column(LargeBinary)
+        enqueued_at: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True), nullable=False
+        )
+        schedule_at: Mapped[Union[datetime, None]] = mapped_column(
+            DateTime(timezone=True), nullable=True
+        )
+        priority: Mapped[int] = mapped_column(Integer, nullable=False)
+        data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
 
     class Response(Base):
         """SQLAlchemy model for a Task Result."""
 
         __tablename__: str = response_tablename
 
-        response_id = Column(
+        response_id: Mapped[int] = mapped_column(
             Integer, primary_key=True, nullable=False, autoincrement=True
         )
-        queue_name = Column(Text, nullable=False, index=True)
-        entry_id = Column(Integer, index=True, nullable=False)
+        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+        entry_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
 
-        delivered_at = Column(DateTime(timezone=True), nullable=False)
-        cleanup_at = Column(DateTime(timezone=True), nullable=True)
-        data = Column(LargeBinary)
+        delivered_at: Mapped[datetime] = mapped_column(
+            DateTime(timezone=True), nullable=False
+        )
+        cleanup_at: Mapped[Union[datetime, None]] = mapped_column(
+            DateTime(timezone=True), nullable=True
+        )
+        data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
 
     return Base, Entry, Response  # type: ignore
 
@@ -171,10 +173,8 @@ class AlchemicalQueue(Generic[T]):
         self._name = name
         self._session = sessionmaker(
             engine,
-            autocommit=False,
             autoflush=False,
             expire_on_commit=False,
-            future=True,
         )
 
     @property

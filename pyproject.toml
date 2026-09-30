@@ -14,11 +14,10 @@ testpaths = "tests"
 
 [tool.poetry.dependencies]
 python = ">=3.7"
-SQLAlchemy = "^1"
+SQLAlchemy = "^2.0"
 typing_extensions = "*"
 
 [tool.poetry.dev-dependencies]
-SQLAlchemy = {version = "^1", extras = ["mypy"]}
 mkdocs-macros-plugin = "^0.7.0"
 black = ">=22"
 pytest = ">=7"
@@ -36,7 +35,6 @@ alchemical_worker = "alchemical_queues.tasks.cli:cli"
 
 [tool.mypy]
 python_version = "3.7"
-plugins = "sqlalchemy.ext.mypy.plugin"
 warn_unused_configs = true
 exclude = ["meta/", "tests/"]
 
