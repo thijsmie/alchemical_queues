@@ -6,10 +6,8 @@ from datetime import timedelta
 
 import pytest
 
-pytest_asyncio = pytest.importorskip("pytest_asyncio")
+pytest.importorskip("pytest_asyncio")
 pytest.importorskip("aiosqlite")
-
-from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from alchemical_queues.aio import AsyncAlchemicalQueues  # noqa: E402
 from alchemical_queues.tasks import TaskException  # noqa: E402
@@ -22,13 +20,8 @@ from .mocktasks_async import (  # noqa: E402
     returns_none,
 )
 
-
-@pytest_asyncio.fixture
-async def async_queue(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'async_task.db'}")
-    q = AsyncAlchemicalQueues(engine=engine)
-    await q.create_all()
-    return q
+# async_engine_factory/async_queue fixtures come from conftest.py, which also
+# wires up --async-engine so this file can run against Postgres in CI.
 
 
 @pytest.mark.asyncio
@@ -133,11 +126,10 @@ async def test_work_one_nonblocking_returns_when_empty(
 
 
 @pytest.mark.asyncio
-async def test_keepalive_extends_the_claim_during_a_slow_handler(tmp_path):
+async def test_keepalive_extends_the_claim_during_a_slow_handler(async_engine_factory):
     from .mocktasks_async import slow_task
 
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'keepalive.db'}")
-    aq = AsyncAlchemicalQueues(engine=engine)
+    aq = AsyncAlchemicalQueues(engine=async_engine_factory())
     await aq.create_all()
     q = aq.get_task_queue("tasks", visibility_timeout=timedelta(milliseconds=80))
 
@@ -152,3 +144,8 @@ async def test_keepalive_extends_the_claim_during_a_slow_handler(tmp_path):
     result = await v.result()
     assert result == "done after 0.2s (retries=0)"
     assert await q.qsize() == 0
+
+    # Built its own aq instead of using the async_queue fixture (to control
+    # visibility_timeout), so clean up the response row it left behind --
+    # matters against a shared --async-engine (e.g. Postgres in CI).
+    await aq.clear()

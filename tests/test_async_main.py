@@ -6,28 +6,15 @@ the sync classes.
 
 import pytest
 
-pytest_asyncio = pytest.importorskip("pytest_asyncio")
+pytest.importorskip("pytest_asyncio")
 pytest.importorskip("aiosqlite")
-
-from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from alchemical_queues import ClaimExpired  # noqa: E402
 from alchemical_queues.aio import AsyncAlchemicalQueues  # noqa: E402
 
-
-@pytest.fixture
-def async_engine_factory(tmp_path):
-    def factory():
-        return create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'async.db'}")
-
-    return factory
-
-
-@pytest_asyncio.fixture
-async def async_queue(async_engine_factory):
-    q = AsyncAlchemicalQueues(engine=async_engine_factory())
-    await q.create_all()
-    return q
+# async_engine_factory/async_queue fixtures come from conftest.py, which also
+# wires up --async-engine so this file can run against Postgres in CI, same
+# as test_claims.py does for the sync classes via --engine.
 
 
 @pytest.mark.asyncio
@@ -241,6 +228,12 @@ async def test_extend_on_an_expired_claim_raises(async_engine_factory):
 
     with pytest.raises(ClaimExpired):
         await q.extend(entry.entry_id, entry.claim_token)
+
+    # This test builds its own aq (to control visibility_timeout) instead of
+    # using the async_queue fixture, so it must clean up after itself --
+    # against a shared --async-engine (e.g. Postgres in CI) a leftover row
+    # here would otherwise leak into the next test.
+    await q.discard(reclaimed.entry_id, reclaimed.claim_token)
 
 
 @pytest.mark.asyncio
