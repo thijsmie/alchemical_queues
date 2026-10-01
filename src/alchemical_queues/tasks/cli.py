@@ -8,7 +8,6 @@ from sqlalchemy.engine import create_engine
 from alchemical_queues import AlchemicalQueues
 from alchemical_queues.tasks import Worker
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "engine",
