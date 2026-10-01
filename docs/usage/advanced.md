@@ -102,3 +102,74 @@ queues.create_all()  # also creates any other tables defined on Base
 ```
 
 This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way. As above, run `alchemical_worker --import myapp.queues:queues task-queue` against it rather than the plain engine-URL form.
+
+## Serializers
+
+By default, queue entries (and task responses) are serialized with `pickle`, same as always. If you want a different wire format, pass a `Serializer` instance via the `serializer=` argument of `get()`/`get_task_queue()` and friends:
+
+```python
+from alchemical_queues.serializers import JsonSerializer
+
+queue = queues.get("json-queue", serializer=JsonSerializer())
+queue.put({"a": 1})
+```
+
+`JsonSerializer` requires the data to be JSON-serializable. For typed, schema-validated payloads, use `PydanticSerializer` with a [pydantic](https://docs.pydantic.dev/) model (requires the `pydantic` extra: `pip install alchemical_queues[pydantic]`):
+
+```python
+from pydantic import BaseModel
+from alchemical_queues.serializers import PydanticSerializer
+
+class Job(BaseModel):
+    user_id: int
+    payload: str
+
+# get_serialized() infers the queue's type from the serializer, so
+# entry.data below is typed as Job, no typeof= needed.
+queue = queues.get_serialized("job-queue", PydanticSerializer(Job))
+queue.put(Job(user_id=1, payload="hello"))
+
+entry = queue.get()
+print(entry.data.user_id)  # type-checked as int
+```
+
+The same `serializer=`/`get_serialized()` pair is available on `get_task_queue()`/`get_task_queue_serialized()`, which also take an independent `response_serializer=`: a task queue's entries (`put()`/`get()`) and its responses (`respond()`/`responses()`) are a different `AlchemicalTaskQueue[T, R]` type parameter each, with their own serializer, since a task's input and its result are usually different shapes.
+
+```python
+from pydantic import BaseModel
+from alchemical_queues.serializers import PydanticSerializer
+
+class Job(BaseModel):
+    user_id: int
+    payload: str
+
+class JobResult(BaseModel):
+    output_url: str
+
+# get_task_queue_serialized() infers T from serializer and R from
+# response_serializer, so entry.data is a Job and responses()[i].data is a
+# JobResult -- independently serialized, no shared shape required.
+task_queue = queues.get_task_queue_serialized(
+    "job-queue", PydanticSerializer(Job), response_serializer=PydanticSerializer(JobResult)
+)
+```
+
+Write your own `Serializer` by subclassing `Serializer[T]` with `dumps(self, obj: T) -> bytes` and `loads(self, data: bytes) -> T`.
+
+### Typing a task's result with `tasks.Worker`
+
+`tasks.Worker` always responds with `{"result": ...}` on success or `{"error": ..., "error_type": ...}` on failure -- `QueuedTask.result` needs that envelope to tell the two apart. Passing a plain serializer as `response_serializer` would mean serializing that whole envelope (and would break on the failure case, which is a different shape). `tasks.TaskResultSerializer` instead wraps an inner serializer that only ever sees the *success value* -- what your task handler returns -- and keeps Worker's envelope around it:
+
+```python
+from alchemical_queues.tasks import TaskResultSerializer
+
+task_queue = queues.get_task_queue_serialized(
+    "job-queue",
+    PickleSerializer(),  # the task envelope itself (function/args/kwargs/...)
+    response_serializer=TaskResultSerializer(PydanticSerializer(JobResult)),
+)
+
+handle = run_job(...).schedule(task_queue)
+tasks.Worker(task_queue).work_one()
+handle.result  # a JobResult, or a TaskException on failure -- same as always
+```

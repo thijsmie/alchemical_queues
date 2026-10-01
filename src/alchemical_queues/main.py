@@ -1,6 +1,5 @@
 """Implementation of Alchemical Queues"""
 
-import pickle
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Dict, Generic, List, Type, TypeVar, Union, cast
@@ -20,10 +19,14 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from .serializers import PickleSerializer, Serializer
+
 DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
+DEFAULT_SERIALIZER: Serializer[Any] = PickleSerializer()
 
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 # Dialects whose SELECT ... FOR UPDATE supports SKIP LOCKED, used to make
 # concurrent AlchemicalTaskQueue.get() calls avoid contending on the same rows.
@@ -197,7 +200,9 @@ class AlchemicalQueues:
             session.execute(delete(self._rmodel))
             session.commit()
 
-    def get(self, key: str) -> "AlchemicalQueue[Any]":
+    def get(
+        self, key: str, *, serializer: Serializer[Any] = DEFAULT_SERIALIZER
+    ) -> "AlchemicalQueue[Any]":
         """Get a plain Queue instance: `put()`/`get()`/`qsize()`/`empty()`/`clear()`,
         where `get()` removes the entry immediately. If your process dies
         between `get()` and finishing whatever you needed the entry for, the
@@ -207,6 +212,14 @@ class AlchemicalQueues:
 
         Args:
             key (str): The name of the queue you wish to access.
+            serializer (Serializer, optional): how entries put into this queue
+                are turned into bytes for storage and back. Defaults to
+                [PickleSerializer][alchemical_queues.serializers.PickleSerializer],
+                matching previous behavior. Only takes effect the first time
+                this queue name is requested; later calls return the same
+                cached instance. See
+                [get_serialized][alchemical_queues.AlchemicalQueues.get_serialized]
+                for a typed equivalent.
 
         Returns:
             AlchemicalQueue
@@ -215,29 +228,61 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._queues:
-            self._queues[key] = AlchemicalQueue(self._engine, self._qmodel, key)
+            self._queues[key] = AlchemicalQueue(
+                self._engine, self._qmodel, key, serializer=serializer
+            )
 
         return self._queues[key]
 
-    def get_typed(self, key: str, typeof: Type[T]) -> "AlchemicalQueue[T]":
+    def get_typed(
+        self,
+        key: str,
+        typeof: Type[T],
+        *,
+        serializer: Union[Serializer[T], None] = None,
+    ) -> "AlchemicalQueue[T]":
         """Get a typed Queue instance
 
         Args:
             key (str): The name of the queue you wish to access.
             typeof (Type[T]): The type of the queue you wish to use
+            serializer (Serializer[T] | None, optional): see
+                [get][alchemical_queues.AlchemicalQueues.get]. Defaults to
+                [PickleSerializer][alchemical_queues.serializers.PickleSerializer].
 
         Returns:
             AlchemicalQueue[T]
         """
         # pylint: disable=unused-argument
-        return cast(AlchemicalQueue[T], self.get(key))
+        return cast(
+            AlchemicalQueue[T],
+            self.get(key, serializer=serializer or DEFAULT_SERIALIZER),
+        )
+
+    def get_serialized(
+        self, key: str, serializer: Serializer[T]
+    ) -> "AlchemicalQueue[T]":
+        """Get a Queue instance typed by its `serializer` instead of an
+        explicit `typeof`, e.g. `queues.get_serialized("q", PydanticSerializer(MyModel))`
+        gives you an `AlchemicalQueue[MyModel]` without repeating the type.
+
+        Args:
+            key (str): The name of the queue you wish to access.
+            serializer (Serializer[T]): see [get][alchemical_queues.AlchemicalQueues.get].
+
+        Returns:
+            AlchemicalQueue[T]
+        """
+        return cast(AlchemicalQueue[T], self.get(key, serializer=serializer))
 
     def get_task_queue(
         self,
         key: str,
         *,
         visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
-    ) -> "AlchemicalTaskQueue[Any]":
+        serializer: Serializer[Any] = DEFAULT_SERIALIZER,
+        response_serializer: Serializer[Any] = DEFAULT_SERIALIZER,
+    ) -> "AlchemicalTaskQueue[Any, Any]":
         """Get an [AlchemicalTaskQueue][alchemical_queues.AlchemicalTaskQueue]
         instance: `get()` claims an entry rather than removing it, with
         `release()`/`discard()`/`extend()` to manage that claim and
@@ -251,6 +296,18 @@ class AlchemicalQueues:
                 responded to or released it. Only takes effect the first time
                 this queue name is requested; later calls return the same
                 cached AlchemicalTaskQueue instance.
+            serializer (Serializer, optional): how entries put into this queue
+                are turned into bytes for storage and back. Defaults to
+                [PickleSerializer][alchemical_queues.serializers.PickleSerializer],
+                matching previous behavior. Only takes effect the first time
+                this queue name is requested. See
+                [get_task_queue_serialized][alchemical_queues.AlchemicalQueues.get_task_queue_serialized]
+                for a typed equivalent.
+            response_serializer (Serializer, optional): how responses recorded
+                via `respond()` are turned into bytes for storage and back.
+                Independent of `serializer` -- a task's input and its result
+                are usually different shapes. Defaults to
+                [PickleSerializer][alchemical_queues.serializers.PickleSerializer].
 
         Returns:
             AlchemicalTaskQueue
@@ -260,7 +317,13 @@ class AlchemicalQueues:
 
         if key not in self._task_queues:
             self._task_queues[key] = AlchemicalTaskQueue(
-                self._engine, self._qmodel, self._rmodel, key, visibility_timeout
+                self._engine,
+                self._qmodel,
+                self._rmodel,
+                key,
+                visibility_timeout,
+                serializer=serializer,
+                response_serializer=response_serializer,
             )
 
         return self._task_queues[key]
@@ -271,22 +334,77 @@ class AlchemicalQueues:
         typeof: Type[T],
         *,
         visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
-    ) -> "AlchemicalTaskQueue[T]":
-        """Get a typed AlchemicalTaskQueue instance
+        serializer: Union[Serializer[T], None] = None,
+    ) -> "AlchemicalTaskQueue[T, Any]":
+        """Get a typed AlchemicalTaskQueue instance. Only the entry type `T`
+        is given explicitly here -- responses stay `Any`
+        (`PickleSerializer` by default). See
+        [get_task_queue_serialized][alchemical_queues.AlchemicalQueues.get_task_queue_serialized]
+        to also type (and independently serialize) responses.
 
         Args:
             key (str): The name of the queue you wish to access.
             typeof (Type[T]): The type of the queue you wish to use
             visibility_timeout (timedelta, optional): see
                 [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+            serializer (Serializer[T] | None, optional): see
+                [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+                Defaults to [PickleSerializer][alchemical_queues.serializers.PickleSerializer].
 
         Returns:
-            AlchemicalTaskQueue[T]
+            AlchemicalTaskQueue[T, Any]
         """
         # pylint: disable=unused-argument
         return cast(
-            AlchemicalTaskQueue[T],
-            self.get_task_queue(key, visibility_timeout=visibility_timeout),
+            AlchemicalTaskQueue[T, Any],
+            self.get_task_queue(
+                key,
+                visibility_timeout=visibility_timeout,
+                serializer=serializer or DEFAULT_SERIALIZER,
+            ),
+        )
+
+    def get_task_queue_serialized(
+        self,
+        key: str,
+        serializer: Serializer[T],
+        *,
+        response_serializer: Union[Serializer[R], None] = None,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ) -> "AlchemicalTaskQueue[T, R]":
+        """Get an AlchemicalTaskQueue instance typed by its `serializer`/
+        `response_serializer` instead of explicit `typeof`s, e.g.
+        `queues.get_task_queue_serialized("q", PydanticSerializer(Job), response_serializer=PydanticSerializer(JobResult))`
+        gives you an `AlchemicalTaskQueue[Job, JobResult]` without repeating
+        either type -- `entry.data` is a `Job`, `responses()[i].data` is a
+        `JobResult`, independently serialized.
+
+        Args:
+            key (str): The name of the queue you wish to access.
+            serializer (Serializer[T]): see
+                [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+            response_serializer (Serializer[R] | None, optional): see
+                [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+                Defaults to [PickleSerializer][alchemical_queues.serializers.PickleSerializer].
+                For a queue `tasks.Worker` runs, consider
+                [tasks.TaskResultSerializer][alchemical_queues.tasks.TaskResultSerializer],
+                which keeps Worker's `{"result": ...}`/`{"error": ...}`
+                envelope while serializing the success value with a
+                serializer of your choice.
+            visibility_timeout (timedelta, optional): see
+                [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+
+        Returns:
+            AlchemicalTaskQueue[T, R]
+        """
+        return cast(
+            AlchemicalTaskQueue[T, R],
+            self.get_task_queue(
+                key,
+                visibility_timeout=visibility_timeout,
+                serializer=serializer,
+                response_serializer=response_serializer or DEFAULT_SERIALIZER,
+            ),
         )
 
 
@@ -305,10 +423,17 @@ class AlchemicalQueue(Generic[T]):
     instead.
     """
 
-    def __init__(self, engine: Engine, model, name: str):
+    def __init__(
+        self,
+        engine: Engine,
+        model,
+        name: str,
+        serializer: Serializer[T] = DEFAULT_SERIALIZER,
+    ):
         self._engine = engine
         self._model = model
         self._name = name
+        self._serializer = serializer
         self._session = sessionmaker(
             engine,
             autoflush=False,
@@ -330,7 +455,9 @@ class AlchemicalQueue(Generic[T]):
         """Put an entry into the AlchemicalQueue
 
         Args:
-            item (Any): The item you wish to add to the queue. It must be pickle-able.
+            item (T): The item you wish to add to the queue. Must be
+                serializable by this queue's `serializer` (pickle-able, by
+                default).
             schedule_at (datetime | None, optional): Earliest timestamp this entry may be popped of the queue.
             priority (int, optional): Entry priority. Entries are popped of first in order of priority and then
                                       in order of adding to the queue.
@@ -344,7 +471,7 @@ class AlchemicalQueue(Generic[T]):
             schedule_at=schedule_at,
             priority=priority,
             queue_name=self._name,
-            data=pickle.dumps(item),
+            data=self._serializer.dumps(item),
         )
 
         with self._session() as session:
@@ -393,7 +520,7 @@ class AlchemicalQueue(Generic[T]):
                 session.rollback()
                 return None
 
-            entry = AlchemicalEntry(item, pickle.loads(item.data))
+            entry = AlchemicalEntry(item, self._serializer.loads(item.data))
             session.commit()
 
         return entry
@@ -441,7 +568,7 @@ class AlchemicalQueue(Generic[T]):
             session.commit()
 
 
-class AlchemicalTaskQueue(Generic[T]):
+class AlchemicalTaskQueue(Generic[T, R]):
     """An Alchemical Queue with crash-safe delivery: `get()` claims an entry
     rather than removing it, `release()`/`discard()`/`extend()` manage that
     claim, and `respond()`/`responses()` record and retrieve a result for a
@@ -449,6 +576,11 @@ class AlchemicalTaskQueue(Generic[T]):
     is built on. It is not intended to be initialized by a user, go through
     [AlchemicalQueues.get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue]
     instead.
+
+    `T` is the type of entries (`put()`/`get()`); `R` is the type of
+    responses (`respond()`/`responses()`) -- they're independent, each with
+    their own `serializer`/`response_serializer`, since a task's input and
+    its result are usually different shapes.
 
     If you just want a plain FIFO/priority queue and don't need redelivery,
     retries, or result tracking, use
@@ -464,12 +596,16 @@ class AlchemicalTaskQueue(Generic[T]):
         response_model,
         name: str,
         visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+        serializer: Serializer[T] = DEFAULT_SERIALIZER,
+        response_serializer: Serializer[R] = DEFAULT_SERIALIZER,
     ):
         self._engine = engine
         self._model = model
         self._response_model = response_model
         self._name = name
         self._visibility_timeout = visibility_timeout
+        self._response_serializer = response_serializer
+        self._serializer = serializer
         self._session = sessionmaker(
             engine,
             autoflush=False,
@@ -496,7 +632,9 @@ class AlchemicalTaskQueue(Generic[T]):
         """Put an entry into the queue
 
         Args:
-            item (Any): The item you wish to add to the queue. It must be pickle-able.
+            item (T): The item you wish to add to the queue. Must be
+                serializable by this queue's `serializer` (pickle-able, by
+                default).
             schedule_at (datetime | None, optional): Earliest timestamp this entry may be claimed.
             priority (int, optional): Entry priority. Entries are claimed first in order of priority and then
                                       in order of adding to the queue.
@@ -510,7 +648,7 @@ class AlchemicalTaskQueue(Generic[T]):
             schedule_at=schedule_at,
             priority=priority,
             queue_name=self._name,
-            data=pickle.dumps(item),
+            data=self._serializer.dumps(item),
         )
 
         with self._session() as session:
@@ -599,7 +737,7 @@ class AlchemicalTaskQueue(Generic[T]):
                 session.rollback()
                 return None
 
-            entry = AlchemicalEntry(item, pickle.loads(item.data))
+            entry = AlchemicalEntry(item, self._serializer.loads(item.data))
             session.commit()
 
         return entry
@@ -765,8 +903,8 @@ class AlchemicalTaskQueue(Generic[T]):
             session.commit()
 
     def respond(
-        self, entry_id: int, response: Any, cleanup_at: Union[datetime, None] = None
-    ) -> "AlchemicalResponse":
+        self, entry_id: int, response: R, cleanup_at: Union[datetime, None] = None
+    ) -> "AlchemicalResponse[R]":
         """Record a response for a queue entry. Used to implement task queues.
 
         This only records the response -- it has no effect on a claim you may
@@ -785,12 +923,13 @@ class AlchemicalTaskQueue(Generic[T]):
 
         Args:
             entry_id (int): The entry_id you wish to respond to.
-            response (Any): The response data. Must be pickable.
+            response (R): The response data. Must be serializable by this
+                queue's `response_serializer` (pickle-able, by default).
             cleanup_at (datetime, optional): The optional cleanup timestamp. After this time the response will be removed.
                                              By default it is not automatically cleaned up.
 
         Returns:
-            AlchemicalResponse: the response as sent.
+            AlchemicalResponse[R]: the response as sent.
         """
 
         if not isinstance(entry_id, int):
@@ -801,7 +940,7 @@ class AlchemicalTaskQueue(Generic[T]):
             delivered_at=datetime.now(),
             cleanup_at=cleanup_at,
             queue_name=self._name,
-            data=pickle.dumps(response),
+            data=self._response_serializer.dumps(response),
         )
 
         with self._session() as session:
@@ -810,11 +949,11 @@ class AlchemicalTaskQueue(Generic[T]):
 
             return AlchemicalResponse(entry, response)
 
-    def responses(self, entry_id: int) -> List["AlchemicalResponse"]:
+    def responses(self, entry_id: int) -> List["AlchemicalResponse[R]"]:
         """Obtain the response(s) to a specific queue entry.
 
         Returns:
-            List[AlchemicalResponse]: A list of responses
+            List[AlchemicalResponse[R]]: A list of responses
         """
         if not isinstance(entry_id, int):
             raise TypeError(f"entry_id={entry_id} should be integer")
@@ -836,7 +975,10 @@ class AlchemicalTaskQueue(Generic[T]):
                     self._response_model.entry_id == entry_id,
                 )
             ).all()
-            return [AlchemicalResponse(e, pickle.loads(e.data)) for e in entries]
+            return [
+                AlchemicalResponse(e, self._response_serializer.loads(e.data))
+                for e in entries
+            ]
 
 
 class AlchemicalEntry(Generic[T]):
@@ -887,7 +1029,7 @@ class AlchemicalEntry(Generic[T]):
         )
 
 
-class AlchemicalResponse:
+class AlchemicalResponse(Generic[R]):
     """An response to a queue item. While you can use this as a user, it is probably most useful for the tasks submodule.
 
     Attributes:
@@ -895,7 +1037,7 @@ class AlchemicalResponse:
         entry_id (int): the identifier of the associated entry.
         delivered_at (datetime): when the response was submitted.
         cleanup_at (datetime | None): autoremove this response after this time.
-        data (Any): Response data.
+        data (R): Response data.
     """
 
     __slots__ = [
@@ -909,7 +1051,7 @@ class AlchemicalResponse:
     def __init__(
         self,
         response,
-        data: T,
+        data: R,
     ):
         self.response_id = response.response_id
         self.entry_id = response.entry_id

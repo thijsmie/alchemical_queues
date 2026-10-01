@@ -23,6 +23,10 @@ nav:
       - "api/core/AlchemicalEntry.md"
       - "api/core/AlchemicalResponse.md"
       - "api/core/ClaimExpired.md"
+      - "api/core/Serializer.md"
+      - "api/core/PickleSerializer.md"
+      - "api/core/JsonSerializer.md"
+      - "api/core/PydanticSerializer.md"
     - Tasks:
       - task: "api/tasks/task.md"
       - "api/tasks/Worker.md"
@@ -30,6 +34,7 @@ nav:
       - "api/tasks/QueuedTask.md"
       - "api/tasks/TaskInfo.md"
       - "api/tasks/TaskException.md"
+      - "api/tasks/TaskResultSerializer.md"
 
 theme:
   name: material
