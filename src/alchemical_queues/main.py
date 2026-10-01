@@ -1,12 +1,24 @@
 """Implementation of Alchemical Queues"""
 
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Union, Type, cast, Generic, TypeVar
 
-from sqlalchemy import or_, delete, select, func, DateTime, Integer, Text, LargeBinary
+from sqlalchemy import (
+    or_,
+    delete,
+    select,
+    update,
+    func,
+    DateTime,
+    Integer,
+    Text,
+    LargeBinary,
+)
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.engine import Engine
+
+DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 
 
 T = TypeVar("T")
@@ -52,6 +64,13 @@ def _generate_models(
         )
         priority: Mapped[int] = mapped_column(Integer, nullable=False)
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
+        # Set by get() when an entry is claimed; cleared (deleted, really -- see
+        # respond()/release()) once it's handled. A claimed entry past this
+        # timestamp is treated as abandoned and becomes claimable again, so a
+        # worker that dies mid-task doesn't lose the entry silently forever.
+        claimed_until: Mapped[Union[datetime, None]] = mapped_column(
+            DateTime(timezone=True), nullable=True
+        )
 
     class Response(base):  # type: ignore[misc,valid-type]
         """SQLAlchemy model for a Task Result."""
@@ -140,11 +159,21 @@ class AlchemicalQueues:
             session.execute(delete(self._rmodel))
             session.commit()
 
-    def get(self, key: str) -> "AlchemicalQueue[Any]":
+    def get(
+        self,
+        key: str,
+        *,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ) -> "AlchemicalQueue[Any]":
         """Get a Queue instance
 
         Args:
             key (str): The name of the queue you wish to access.
+            visibility_timeout (timedelta, optional): how long an entry stays claimed
+                after [AlchemicalQueue.get][alchemical_queues.AlchemicalQueue.get] before
+                it becomes claimable again if nobody has responded to or released it.
+                Only takes effect the first time this queue name is requested; later
+                calls return the same cached AlchemicalQueue instance.
 
         Returns:
             AlchemicalQueue
@@ -154,34 +183,51 @@ class AlchemicalQueues:
 
         if key not in self._queues:
             self._queues[key] = AlchemicalQueue(
-                self._engine, self._qmodel, self._rmodel, key
+                self._engine, self._qmodel, self._rmodel, key, visibility_timeout
             )
 
         return self._queues[key]
 
-    def get_typed(self, key: str, typeof: Type[T]) -> "AlchemicalQueue[T]":
+    def get_typed(
+        self,
+        key: str,
+        typeof: Type[T],
+        *,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ) -> "AlchemicalQueue[T]":
         """Get a typed Queue instance
 
         Args:
             key (str): The name of the queue you wish to access.
             typeof (Type[T]): The type of the queue you wish to use
+            visibility_timeout (timedelta, optional): see [get][alchemical_queues.AlchemicalQueues.get].
 
         Returns:
             AlchemicalQueue[T]
         """
         # pylint: disable=unused-argument
-        return cast(AlchemicalQueue[T], self.get(key))
+        return cast(
+            AlchemicalQueue[T], self.get(key, visibility_timeout=visibility_timeout)
+        )
 
 
 class AlchemicalQueue(Generic[T]):
     """An Alchemical Queue. It is not intended to be initialized by a user, go through
     [AlchemicalQueues][alchemical_queues.AlchemicalQueues] instead."""
 
-    def __init__(self, engine: Engine, model, response_model, name: str):
+    def __init__(
+        self,
+        engine: Engine,
+        model,
+        response_model,
+        name: str,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ):
         self._engine = engine
         self._model = model
         self._response_model = response_model
         self._name = name
+        self._visibility_timeout = visibility_timeout
         self._session = sessionmaker(
             engine,
             autoflush=False,
@@ -226,19 +272,42 @@ class AlchemicalQueue(Generic[T]):
 
             return AlchemicalEntry(entry, item)
 
-    def get(self) -> Union["AlchemicalEntry[T]", None]:
-        """Get the highest priority entry out from the queue
+    def get(
+        self, *, visibility_timeout: Union[timedelta, None] = None
+    ) -> Union["AlchemicalEntry[T]", None]:
+        """Claim the highest priority entry from the queue.
+
+        The entry is not removed by this call: it is marked claimed until
+        `visibility_timeout` elapses, so if your process dies before you call
+        [respond][alchemical_queues.AlchemicalQueue.respond] or
+        [release][alchemical_queues.AlchemicalQueue.release] for it, a later
+        `get()` call will eventually claim it again instead of the entry being
+        lost. Call `respond()` (if you have a result) or `release()` (if you
+        don't) as soon as you're done with an entry to free it up immediately,
+        rather than waiting out the timeout.
+
+        Args:
+            visibility_timeout (timedelta | None, optional): how long this entry
+                stays claimed before it becomes claimable again. Defaults to the
+                visibility_timeout this queue was obtained with (see
+                [AlchemicalQueues.get][alchemical_queues.AlchemicalQueues.get]).
 
         Returns:
-            (AlchemicalEntry | None): The popped entry, or None if the queue is empty (or nothing is scheduled yet)
+            (AlchemicalEntry | None): The claimed entry, or None if the queue is empty
+            (or nothing is claimable/scheduled yet)
         """
 
         timestamp = datetime.now()
+        timeout = (
+            visibility_timeout
+            if visibility_timeout is not None
+            else self._visibility_timeout
+        )
 
         with self._session() as session:
-            # Picking the candidate row and deleting it happen in one atomic
-            # DELETE ... RETURNING statement, so two concurrent get() calls can
-            # never pop the same entry. This needs no special transaction
+            # Picking the candidate row and claiming it happen in one atomic
+            # UPDATE ... RETURNING statement, so two concurrent get() calls can
+            # never claim the same entry. This needs no special transaction
             # isolation (previously SQLite needed a global BEGIN EXCLUSIVE,
             # which serialized every transaction on the engine, including ones
             # from unrelated code sharing the same engine).
@@ -250,6 +319,10 @@ class AlchemicalQueue(Generic[T]):
                         self._model.schedule_at == None,  # pylint: disable=C0121
                         self._model.schedule_at <= timestamp,  # type: ignore
                     ),
+                    or_(
+                        self._model.claimed_until == None,  # pylint: disable=C0121
+                        self._model.claimed_until <= timestamp,  # type: ignore
+                    ),
                 )
                 .order_by(self._model.priority.desc(), self._model.entry_id.asc())  # type: ignore
                 .limit(1)
@@ -259,8 +332,9 @@ class AlchemicalQueue(Generic[T]):
                 candidate = candidate.with_for_update(skip_locked=True)
 
             item = session.execute(
-                delete(self._model)
+                update(self._model)
                 .where(self._model.entry_id == candidate.scalar_subquery())
+                .values(claimed_until=timestamp + timeout)
                 .returning(self._model)
             ).scalar_one_or_none()
 
@@ -272,6 +346,26 @@ class AlchemicalQueue(Generic[T]):
             session.commit()
 
         return entry
+
+    def release(self, entry_id: int) -> None:
+        """Release a claimed entry, without recording a response for it.
+
+        Use this when you called [get][alchemical_queues.AlchemicalQueue.get],
+        decided you have nothing to respond with, and want the entry removed
+        right away instead of waiting for its claim to time out and become
+        available for another `get()` to pick up. Calling this on an entry_id
+        that isn't currently claimed (or doesn't exist) is a no-op.
+
+        Args:
+            entry_id (int): the entry_id you wish to release.
+        """
+
+        if not isinstance(entry_id, int):
+            raise TypeError(f"entry_id={entry_id} should be integer")
+
+        with self._session() as session:
+            session.execute(delete(self._model).where(self._model.entry_id == entry_id))
+            session.commit()
 
     def qsize(self) -> int:
         """Return the approximate size of this queue.
@@ -318,7 +412,9 @@ class AlchemicalQueue(Generic[T]):
     def respond(
         self, entry_id: int, response: Any, cleanup_at: Union[datetime, None] = None
     ) -> "AlchemicalResponse":
-        """Send a response to a queue entry. Used to implement task queues.
+        """Send a response to a queue entry, and release it if it is still
+        claimed (as from a prior [get][alchemical_queues.AlchemicalQueue.get]).
+        Used to implement task queues.
 
         Args:
             entry_id (int): The entry_id you wish to respond to.
@@ -343,6 +439,7 @@ class AlchemicalQueue(Generic[T]):
 
         with self._session() as session:
             session.add(entry)
+            session.execute(delete(self._model).where(self._model.entry_id == entry_id))
             session.commit()
 
             return AlchemicalResponse(entry, response)

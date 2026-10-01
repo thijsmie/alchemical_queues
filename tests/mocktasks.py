@@ -21,3 +21,8 @@ def fail_once(info: TaskInfo, data: int) -> int:
 @task
 def fail_always(info: TaskInfo, data: int) -> int:
     raise Exception("Always fails")
+
+
+@task
+def returns_none(info: TaskInfo) -> None:
+    return None

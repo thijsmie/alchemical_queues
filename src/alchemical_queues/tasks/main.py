@@ -65,7 +65,13 @@ class Worker:
 
         self._logger.warning("Failed to perform task %s", entry_id)
         self._logger.exception(exception)
-        self.queue.respond(entry_id, {"error": str(exception)})
+        self.queue.respond(
+            entry_id,
+            {
+                "error": str(exception),
+                "error_type": type(exception).__name__ if exception else None,
+            },
+        )
 
         return False
 
@@ -73,38 +79,48 @@ class Worker:
         data = task_entry.data
         entry_id = task_entry.data.get("entry_id") or task_entry.entry_id
         function_path = data["function"]
-        task_handler = self._handler_registry.get(function_path)
-
-        if function_path not in self._handler_registry:
-            task_handler = self._handler_registry[function_path] = cast(
-                Tasker, locate(function_path)
-            )
-
-        if task_handler is None:
-            return self._fail(
-                entry_id,
-                data,
-                KeyError(
-                    f"AlchemicalEntry handler `{function_path}` not found.",
-                ),
-                fatal=True,
-            )
 
         try:
-            self._logger.info("Running task `%s`.", task_entry.entry_id)
-            func = task_handler.get_handler()
-            result = func(
-                TaskInfo(task_entry.entry_id, data["retries"], data["max_retries"]),
-                *data["args"],
-                **data["kwargs"],
-            )
-            self.queue.respond(entry_id, {"result": result})
-            return True
-        except KeyboardInterrupt as interrupt:
-            # Allow cancellation via interrupt signal
-            raise interrupt
-        except Exception as error:  # pylint: disable=broad-except
-            return self._fail(entry_id, data, error)
+            task_handler = self._handler_registry.get(function_path)
+
+            if function_path not in self._handler_registry:
+                task_handler = self._handler_registry[function_path] = cast(
+                    Tasker, locate(function_path)
+                )
+
+            if task_handler is None:
+                return self._fail(
+                    entry_id,
+                    data,
+                    KeyError(
+                        f"AlchemicalEntry handler `{function_path}` not found.",
+                    ),
+                    fatal=True,
+                )
+
+            try:
+                self._logger.info("Running task `%s`.", task_entry.entry_id)
+                func = task_handler.get_handler()
+                result = func(
+                    TaskInfo(task_entry.entry_id, data["retries"], data["max_retries"]),
+                    *data["args"],
+                    **data["kwargs"],
+                )
+                self.queue.respond(entry_id, {"result": result})
+                return True
+            except KeyboardInterrupt as interrupt:
+                # Allow cancellation via interrupt signal
+                raise interrupt
+            except Exception as error:  # pylint: disable=broad-except
+                return self._fail(entry_id, data, error)
+        finally:
+            # respond() already releases a claim matching entry_id, but on a
+            # retry entry_id (the logical id, stable across retries) and
+            # task_entry.entry_id (the specific row this call claimed) can
+            # differ -- this is what actually frees that physical claim, so a
+            # retried entry's old row doesn't just sit claimed until its
+            # visibility timeout and get redelivered as a duplicate.
+            self.queue.release(task_entry.entry_id)
 
     def work(self) -> NoReturn:
         """Run tasks forever."""
@@ -143,12 +159,24 @@ class TaskException:
 
     Attributes:
         msg (str): Stringified exception
+        exception_type (str | None): The original exception's class name, e.g.
+            `"ValueError"`, if known. None for failures alchemical_queues itself
+            raised without an underlying exception object (this shouldn't
+            normally happen).
     """
 
-    __slots__ = ["msg"]
+    __slots__ = ["msg", "exception_type"]
 
-    def __init__(self, msg: str) -> None:
+    def __init__(self, msg: str, exception_type: Union[str, None] = None) -> None:
         self.msg: str = msg
+        self.exception_type: Union[str, None] = exception_type
+
+    def __repr__(self) -> str:
+        label = self.exception_type or "TaskException"
+        return f"<{label}: {self.msg}>"
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 class QueuedTask(Generic[RValue]):
@@ -164,6 +192,23 @@ class QueuedTask(Generic[RValue]):
         self._name = name
 
     @property
+    def done(self) -> bool:
+        """Whether this task has a recorded outcome yet (success or failure).
+
+        `result` returns `None` both when the task hasn't completed yet and
+        when it has completed successfully with a return value of `None`, so
+        if your task handler's success value can legitimately be `None` (a
+        "send this email" task that returns nothing, say), check `done`
+        rather than relying on `result`'s truthiness to know whether it's
+        finished.
+
+        Returns:
+            bool: True once `result` reflects a real outcome.
+        """
+
+        return bool(self._queue.responses(self.entry_id))
+
+    @property
     def result(self) -> Union[RValue, TaskException, None]:
         """Obtain the result of a queued task if it is finished,
         an exception if the task failed to run, or None if the task
@@ -172,7 +217,8 @@ class QueuedTask(Generic[RValue]):
         Returns:
             RValue: the value you return from the task handler.
             TaskException: the task failed to execute.
-            None: the task has not completed.
+            None: the task has not completed -- but also what you get if the
+                task completed successfully and returned None itself; see `done`.
         """
 
         responses = self._queue.responses(self.entry_id)
@@ -184,7 +230,7 @@ class QueuedTask(Generic[RValue]):
         data: dict = cast(dict, response.data)
 
         if "error" in data:
-            return TaskException(data["error"])
+            return TaskException(data["error"], data.get("error_type"))
 
         return cast(RValue, data.get("result"))
 

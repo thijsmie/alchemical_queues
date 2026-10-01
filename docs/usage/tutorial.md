@@ -85,10 +85,18 @@ We can wait for the task to finish:
 
 ```python
 import time
-while not task.result:
+while not task.done:
     time.sleep(1)
 print(task.result)
 ```
+
+!!! note "Why `task.done` and not `task.result`?"
+
+    `task.result` is `None` both while the task is still running *and* after it
+    finishes successfully with no return value, so polling on `task.result`
+    itself can't tell those two apart. `task.done` only turns `True` once a
+    task has actually produced an outcome (a result or an error), regardless
+    of what that outcome is.
 
 In a separate terminal we can run the worker. Make sure it can import `add_numbers` by using the same working directory. We will start an
 `alchemical_worker` on the same engine and queue as we used in the example.

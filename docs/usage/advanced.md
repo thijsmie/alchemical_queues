@@ -60,7 +60,24 @@ queues = AlchemicalQueues(
 )
 ```
 
-When you use `alchemical_worker` it will use the default names. You can run the worker via python on your custom queues.
+The `alchemical_worker` CLI's plain `alchemical_worker <engine-url> <queue>` form always uses the default table names and no shared base, since it only has an engine URL to go on. To run it against custom table names (or a shared `base=`, see below), use `--import` instead, pointing it at a module-level `AlchemicalQueues` instance in your own code:
+
+```bash
+alchemical_worker --import myapp.queues:queues task-queue
+```
+
+```python
+# myapp/queues.py
+from alchemical_queues import AlchemicalQueues
+
+queues = AlchemicalQueues(
+    engine,
+    queue_tablename="queues",
+    response_tablename="responses",
+)
+```
+
+Or run it via Python yourself, same as with the default tables:
 
 ```python
 from alchemical_queues.tasks import Worker
@@ -82,4 +99,4 @@ queues = AlchemicalQueues(engine, base=Base)
 queues.create_all()  # also creates any other tables defined on Base
 ```
 
-This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way.
+This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way. As above, run `alchemical_worker --import myapp.queues:queues task-queue` against it rather than the plain engine-URL form.

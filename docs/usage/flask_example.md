@@ -49,7 +49,7 @@ def result(entry: int):
     task_queue = queues.get("task-queue")
     task = add_numbers.retrieve(task_queue, entry)
 
-    if task.result is None:
+    if not task.done:
         return "No result yet"
     else:
         return f"result: {task.result}"
