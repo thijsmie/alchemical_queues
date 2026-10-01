@@ -110,7 +110,7 @@ jobs:
           MARIADB_ROOT_PASSWORD: root
           MARIADB_DATABASE: aq_test
         options: >-
-          --health-cmd="mysqladmin ping -h localhost"
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
