@@ -1,12 +1,13 @@
 """Implementation of the Alchemical Task Queues"""
 
 import time
+import threading
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
 from typing import Callable, TypeVar, Union, Generic, Dict, cast, Any, NoReturn
 from typing_extensions import ParamSpec, Concatenate
-from ..main import AlchemicalQueue, AlchemicalEntry
+from ..main import AlchemicalQueue, AlchemicalEntry, ClaimExpired
 
 
 class TaskInfo:
@@ -30,13 +31,37 @@ class Worker:
     Attributes:
         queue (AlchemicalQueue): the queue this worker runs on
         poll_every (timedelta): how often to poll for new tasks
+        keepalive_every (timedelta | None): how often to extend a task's claim
+            while it's still running. See `__init__`.
     """
 
     def __init__(
-        self, queue: AlchemicalQueue, poll_every: timedelta = timedelta(seconds=1)
+        self,
+        queue: AlchemicalQueue,
+        poll_every: timedelta = timedelta(seconds=1),
+        *,
+        keepalive_every: Union[timedelta, None] = None,
     ):
+        """
+        Args:
+            queue (AlchemicalQueue): the queue this worker runs on.
+            poll_every (timedelta, optional): how often to poll for new tasks
+                when the queue is empty.
+            keepalive_every (timedelta | None, optional): if set, a background
+                thread extends a task's claim by this often while its handler
+                is still running, so a task that runs longer than the queue's
+                `visibility_timeout` doesn't get redelivered to (and
+                double-processed by) another worker. Pick something
+                comfortably shorter than `visibility_timeout` -- a third of
+                it is a reasonable starting point. Left `None` (the default),
+                a task running longer than `visibility_timeout` risks exactly
+                that: if its claim lapses, this worker's eventual result is
+                discarded (logged as a warning) rather than responded with,
+                to avoid risking a duplicate.
+        """
         self.queue = queue
         self.poll_every: timedelta = poll_every
+        self.keepalive_every = keepalive_every
         self._handler_registry: Dict[str, "Tasker"] = {}
         self._logger = getLogger("alchemical_queues.tasks")
 
@@ -75,28 +100,52 @@ class Worker:
 
         return False
 
+    def _keepalive_loop(self, task_entry: AlchemicalEntry, stop: threading.Event) -> None:
+        assert self.keepalive_every is not None
+        assert task_entry.claim_token is not None
+        while not stop.wait(self.keepalive_every.total_seconds()):
+            try:
+                self.queue.extend(task_entry.entry_id, task_entry.claim_token)
+            except ClaimExpired:
+                # Nothing more we can do here -- the main thread's own
+                # discard() call below will discover the same thing and log
+                # it once, so don't duplicate the warning.
+                return
+
     def _perform(self, task_entry: AlchemicalEntry):
+        # task_entry always comes from self.queue.get(), which always sets a
+        # claim_token -- unlike a bare put() result, where it would be None.
+        assert task_entry.claim_token is not None
+        claim_token: int = task_entry.claim_token
+
         data = task_entry.data
         entry_id = task_entry.data.get("entry_id") or task_entry.entry_id
         function_path = data["function"]
 
-        try:
-            task_handler = self._handler_registry.get(function_path)
+        task_handler = self._handler_registry.get(function_path)
+        if function_path not in self._handler_registry:
+            task_handler = self._handler_registry[function_path] = cast(
+                Tasker, locate(function_path)
+            )
 
-            if function_path not in self._handler_registry:
-                task_handler = self._handler_registry[function_path] = cast(
-                    Tasker, locate(function_path)
-                )
+        succeeded = False
+        result: Any = None
+        error: Union[BaseException, None] = None
+        fatal = False
 
-            if task_handler is None:
-                return self._fail(
-                    entry_id,
-                    data,
-                    KeyError(
-                        f"AlchemicalEntry handler `{function_path}` not found.",
-                    ),
-                    fatal=True,
+        if task_handler is None:
+            error = KeyError(f"AlchemicalEntry handler `{function_path}` not found.")
+            fatal = True
+        else:
+            keepalive_stop = threading.Event()
+            keepalive_thread = None
+            if self.keepalive_every is not None:
+                keepalive_thread = threading.Thread(
+                    target=self._keepalive_loop,
+                    args=(task_entry, keepalive_stop),
+                    daemon=True,
                 )
+                keepalive_thread.start()
 
             try:
                 self._logger.info("Running task `%s`.", task_entry.entry_id)
@@ -106,21 +155,47 @@ class Worker:
                     *data["args"],
                     **data["kwargs"],
                 )
-                self.queue.respond(entry_id, {"result": result})
-                return True
-            except KeyboardInterrupt as interrupt:
-                # Allow cancellation via interrupt signal
-                raise interrupt
-            except Exception as error:  # pylint: disable=broad-except
-                return self._fail(entry_id, data, error)
-        finally:
-            # respond() already releases a claim matching entry_id, but on a
-            # retry entry_id (the logical id, stable across retries) and
-            # task_entry.entry_id (the specific row this call claimed) can
-            # differ -- this is what actually frees that physical claim, so a
-            # retried entry's old row doesn't just sit claimed until its
-            # visibility timeout and get redelivered as a duplicate.
-            self.queue.release(task_entry.entry_id)
+                succeeded = True
+            except KeyboardInterrupt:
+                # Allow cancellation via interrupt signal, but let the claim
+                # go back to the queue immediately rather than leaving it to
+                # time out, since we're not actually going to finish it.
+                try:
+                    self.queue.release(task_entry.entry_id, claim_token)
+                except ClaimExpired:
+                    pass
+                raise
+            except Exception as caught:  # pylint: disable=broad-except
+                error = caught
+            finally:
+                if keepalive_thread is not None:
+                    keepalive_stop.set()
+                    keepalive_thread.join()
+
+        # Fencing gate: only act on the outcome above if we still hold this
+        # exact claim. If our visibility_timeout lapsed while we were working
+        # (and nothing extended it in time) this entry may already have been
+        # redelivered to, and handled by, another worker -- discard() then
+        # raises instead of succeeding, and we discard our own outcome rather
+        # than risk responding (or retrying) a second time for it.
+        try:
+            self.queue.discard(task_entry.entry_id, claim_token)
+        except ClaimExpired:
+            self._logger.warning(
+                "Claim for task %s expired before we could act on its outcome "
+                "(it may already have been redelivered and handled elsewhere); "
+                "discarding our own result rather than risking a duplicate. If "
+                "this task can run longer than the queue's visibility_timeout, "
+                "pass keepalive_every= to Worker() or raise visibility_timeout.",
+                task_entry.entry_id,
+            )
+            return False
+
+        if succeeded:
+            self.queue.respond(entry_id, {"result": result})
+            return True
+
+        return self._fail(entry_id, data, error, fatal=fatal)
 
     def work(self) -> NoReturn:
         """Run tasks forever."""

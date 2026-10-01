@@ -138,11 +138,13 @@ def test_queue_size_empty(queue: AlchemicalQueues):
     assert entry is not None
 
     # get() claims an entry, it doesn't remove it -- a claimed-but-not-yet
-    # -released entry is still outstanding work, so it still counts.
+    # -discarded entry is still outstanding work, so it still counts.
     assert not q.empty()
     assert q.qsize() == 1
 
-    q.release(entry.entry_id)
+    # release() would put it back in the queue (still outstanding); discard()
+    # removes it entirely.
+    q.discard(entry.entry_id, entry.claim_token)
 
     assert q.empty()
     assert q.qsize() == 0

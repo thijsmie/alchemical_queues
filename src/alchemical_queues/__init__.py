@@ -1,6 +1,12 @@
 """Alchemical Queues: safe distributed queues built on SQLAlchemy."""
 
-from .main import AlchemicalQueues, AlchemicalQueue, AlchemicalEntry, AlchemicalResponse
+from .main import (
+    AlchemicalQueues,
+    AlchemicalQueue,
+    AlchemicalEntry,
+    AlchemicalResponse,
+    ClaimExpired,
+)
 from . import tasks
 
 __title__ = "Alchemical Queues"
@@ -11,5 +17,6 @@ __all__ = [
     "AlchemicalQueue",
     "AlchemicalEntry",
     "AlchemicalResponse",
+    "ClaimExpired",
     "tasks",
 ]

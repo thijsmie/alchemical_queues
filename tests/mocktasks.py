@@ -1,3 +1,4 @@
+import time
 from alchemical_queues.tasks import task, TaskInfo
 
 
@@ -26,3 +27,9 @@ def fail_always(info: TaskInfo, data: int) -> int:
 @task
 def returns_none(info: TaskInfo) -> None:
     return None
+
+
+@task
+def slow_task(info: TaskInfo, sleep_for: float) -> str:
+    time.sleep(sleep_for)
+    return f"done after {sleep_for}s (retries={info.retries})"
