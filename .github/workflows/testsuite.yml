@@ -99,7 +99,7 @@ jobs:
       run: uv pip install asyncmy
     - name: Run async tests with MySQL (asyncmy)
       run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mysql+asyncmy://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
-    # aiomysql is skipped: it's broken against current PyMySQL (>=2), which
+    # aiomysql is skipped: it's broken against current PyMySQL (>=1.2.3), which
     # removed the escape_bytes_prefixed converter it still imports as a
     # function -- see docs/usage/databases.md#driver-limitations.
 

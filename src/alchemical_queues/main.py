@@ -120,6 +120,21 @@ def _new_claim_token() -> int:
     return secrets.randbits(63)
 
 
+# Matches the queue_name column's String(255) -- enforced here too so a name
+# that's too long fails the same way (ValueError, at get()/get_task_queue()
+# time) on every backend, instead of succeeding on SQLite (no column length
+# limit) and only failing once it hits a write against Postgres/MySQL/MSSQL.
+QUEUE_NAME_MAX_LENGTH = 255
+
+
+def _validate_queue_name(key: str) -> None:
+    if len(key) > QUEUE_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"Queue name {key!r} is {len(key)} characters, longer than the "
+            f"{QUEUE_NAME_MAX_LENGTH}-character limit."
+        )
+
+
 class ClaimExpired(Exception):
     """Raised by AlchemicalTaskQueue's release()/discard()/extend() when the
     entry_id/claim_token pair they were given no longer matches a live
@@ -307,6 +322,7 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._queues:
+            _validate_queue_name(key)
             self._queues[key] = AlchemicalQueue(
                 self._engine, self._qmodel, key, serializer=serializer
             )
@@ -395,6 +411,7 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._task_queues:
+            _validate_queue_name(key)
             self._task_queues[key] = AlchemicalTaskQueue(
                 self._engine,
                 self._qmodel,
@@ -1062,6 +1079,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalResponse(entry, response)
 
+    @_retry_on_deadlock
     def responses(self, entry_id: int) -> List["AlchemicalResponse[R]"]:
         """Obtain the response(s) to a specific queue entry.
 

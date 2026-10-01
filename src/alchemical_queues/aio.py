@@ -32,6 +32,7 @@ from .main import (
     _is_deadlock,
     _new_claim_token,
     _supports_returning,
+    _validate_queue_name,
 )
 from .serializers import PickleSerializer, Serializer
 
@@ -149,6 +150,7 @@ class AsyncAlchemicalQueues:
             )
 
         if key not in self._queues:
+            _validate_queue_name(key)
             self._queues[key] = AsyncAlchemicalQueue(
                 self._engine, self._qmodel, key, serializer=serializer
             )
@@ -208,6 +210,7 @@ class AsyncAlchemicalQueues:
             )
 
         if key not in self._task_queues:
+            _validate_queue_name(key)
             self._task_queues[key] = AsyncAlchemicalTaskQueue(
                 self._engine,
                 self._qmodel,
@@ -704,6 +707,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalResponse(entry, response)
 
+    @_retry_on_deadlock
     async def responses(self, entry_id: int) -> List["AlchemicalResponse[R]"]:
         """Obtain the response(s) to a specific queue entry.
 

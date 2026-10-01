@@ -53,6 +53,15 @@ async def test_queue_name(async_queue: AsyncAlchemicalQueues):
 
 
 @pytest.mark.asyncio
+async def test_queue_name_too_long_rejected(async_queue: AsyncAlchemicalQueues):
+    with pytest.raises(ValueError):
+        async_queue.get("x" * 256)
+
+    with pytest.raises(ValueError):
+        async_queue.get_task_queue("x" * 256)
+
+
+@pytest.mark.asyncio
 async def test_put_get_data(async_queue: AsyncAlchemicalQueues):
     q = async_queue.get("test")
     await q.put(1)
