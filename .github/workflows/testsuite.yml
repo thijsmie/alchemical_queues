@@ -93,12 +93,13 @@ jobs:
       run: uv run pytest -v --engine "mysql+pymysql://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
     - name: Run tests with MySQL (mysqlclient)
       run: uv run pytest -v --engine "mysql+mysqldb://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
-    - name: Install async MySQL drivers
-      run: uv pip install asyncmy aiomysql
+    - name: Install async MySQL driver
+      run: uv pip install asyncmy
     - name: Run async tests with MySQL (asyncmy)
       run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mysql+asyncmy://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
-    - name: Run async tests with MySQL (aiomysql)
-      run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mysql+aiomysql://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
+    # aiomysql is skipped: it's broken against current PyMySQL (>=2), which
+    # removed the escape_bytes_prefixed converter it still imports as a
+    # function -- see docs/usage/databases.md#driver-limitations.
 
   mariadb:
     runs-on: ubuntu-latest
@@ -130,12 +131,11 @@ jobs:
       run: uv pip install pymysql
     - name: Run tests with MariaDB (pymysql)
       run: uv run pytest -v --engine "mariadb+pymysql://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
-    - name: Install async MariaDB drivers
-      run: uv pip install asyncmy aiomysql
+    - name: Install async MariaDB driver
+      run: uv pip install asyncmy
     - name: Run async tests with MariaDB (asyncmy)
       run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mariadb+asyncmy://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
-    - name: Run async tests with MariaDB (aiomysql)
-      run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mariadb+aiomysql://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
+    # aiomysql is skipped here too -- see the mysql job above.
 
   oracle:
     runs-on: ubuntu-latest

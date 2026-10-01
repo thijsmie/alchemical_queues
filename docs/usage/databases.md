@@ -35,8 +35,9 @@ engine = create_engine("mariadb+pymysql://user:password@localhost/dbname")
 
 ```python
 engine = create_async_engine("mysql+asyncmy://user:password@localhost/dbname")
-engine = create_async_engine("mysql+aiomysql://user:password@localhost/dbname")
 ```
+
+`aiomysql` is not supported -- see [Driver limitations](#driver-limitations).
 
 ## Oracle
 
@@ -76,6 +77,7 @@ SQLite has no `SKIP LOCKED` support, so concurrent `get()` calls fall back to pl
 ## Driver limitations
 
 - **MSSQL has no supported async driver.** The only async DBAPI SQLAlchemy offers for SQL Server (`aioodbc`) needs Microsoft's proprietary ODBC driver installed on the host, which isn't available as a plain pip install; `pymssql`, the only dependency-free driver, is sync only. Use the sync `AlchemicalQueues`/`AlchemicalTaskQueue` API against SQL Server, or an `async_task`-free `Worker` if you need to run tasks.
+- **`aiomysql` is broken against current PyMySQL (≥2.0)**, which it depends on under the hood: PyMySQL 2.x turned its `escape_bytes_prefixed` converter into a placeholder string ("DO NOT IMPORT THIS!!!") that `aiomysql` still imports and calls as a function, raising `TypeError: 'str' object is not callable` on every write. This is an upstream incompatibility between the two packages, not something *Alchemical Queues* can work around -- use `asyncmy` for async MySQL/MariaDB instead.
 
 ## How `get()` stays safe under concurrency
 

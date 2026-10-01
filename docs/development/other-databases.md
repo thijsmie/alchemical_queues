@@ -9,7 +9,7 @@ docker run --name mysql -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=aq_test -p
 uv run --with pymysql pytest -x --engine "mysql+pymysql://root:root@127.0.0.1:3306/aq_test"
 ```
 
-Async tests need `asyncmy` or `aiomysql` instead:
+Async tests need `asyncmy` instead (not `aiomysql` -- see [Driver limitations](../usage/databases.md#driver-limitations)):
 
 ```bash
 uv run --with asyncmy pytest -x tests/test_async_main.py tests/test_async_task.py --async-engine "mysql+asyncmy://root:root@127.0.0.1:3306/aq_test"
