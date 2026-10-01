@@ -8,8 +8,7 @@ default [`PickleSerializer`][alchemical_queues.PickleSerializer].
 
 ```bash
 cd examples/starlette_app
-pip install starlette uvicorn
-uvicorn app:app
+uv run --with starlette,uvicorn uvicorn app:app
 ```
 
 Then, in another terminal:

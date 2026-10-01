@@ -1,6 +1,6 @@
 """Alchemical Queues: safe distributed queues built on SQLAlchemy."""
 
-from . import tasks
+from . import aio, tasks
 from .main import (
     AlchemicalEntry,
     AlchemicalQueue,
@@ -31,4 +31,5 @@ __all__ = [
     "JsonSerializer",
     "PydanticSerializer",
     "tasks",
+    "aio",
 ]

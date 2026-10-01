@@ -7,7 +7,7 @@ license = "MIT"
 authors = [{ name = "Thijs Miedema", email = "mail@tmiedema.com" }]
 requires-python = ">=3.7"
 dependencies = [
-    "sqlalchemy>=2.0,<3",
+    "sqlalchemy[asyncio]>=2.0,<3",
     "typing_extensions",
 ]
 
@@ -24,7 +24,9 @@ packages = ["src/alchemical_queues"]
 dev = [
     "ruff>=0.6",
     "pytest>=7",
+    "pytest-asyncio>=0.23; python_version >= '3.9'",
     "pytest-cov>=4.0.0",
+    "aiosqlite; python_version >= '3.9'",
     "mypy",
     "pydantic>=2",
     "anybadge",
@@ -42,6 +44,7 @@ examples = [
     "litestar>=2; python_version >= '3.9'",
     "httpx; python_version >= '3.9'",
     "uvicorn; python_version >= '3.9'",
+    "aiosqlite; python_version >= '3.9'",
 ]
 
 [tool.pytest.ini_options]

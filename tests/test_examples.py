@@ -73,13 +73,16 @@ def test_flask_example(tmp_path):
 
 def test_fastapi_example(tmp_path):
     pytest.importorskip("fastapi")
+    pytest.importorskip("aiosqlite")
     from fastapi.testclient import TestClient
 
     sys.path.insert(0, str(EXAMPLES_DIR / "fastapi_app"))
     try:
         from app import create_app
 
-        app = create_app(f"sqlite:///{tmp_path / 'fastapi.db'}")
+        # fastapi_app is now built on AsyncAlchemicalQueues, so it needs an
+        # async driver URL -- see examples/fastapi_app/app.py.
+        app = create_app(f"sqlite+aiosqlite:///{tmp_path / 'fastapi.db'}")
         with TestClient(app) as client:
             response = client.post("/add", json={"a": 2, "b": 3})
             task_id = response.json()["task_id"]

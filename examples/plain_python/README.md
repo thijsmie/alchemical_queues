@@ -12,14 +12,14 @@ In one terminal, start a worker:
 
 ```bash
 cd examples/plain_python
-alchemical_worker "sqlite:///example.db" tasks
+uv run alchemical_worker "sqlite:///example.db" tasks
 ```
 
 In another terminal, schedule a task and wait for its result:
 
 ```bash
 cd examples/plain_python
-python producer.py
+uv run python producer.py
 ```
 
 You should see the worker print that it is running the task, and the

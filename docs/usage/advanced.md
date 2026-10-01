@@ -173,3 +173,43 @@ handle = run_job(...).schedule(task_queue)
 tasks.Worker(task_queue).work_one()
 handle.result  # a JobResult, or a TaskException on failure -- same as always
 ```
+
+## Async
+
+Everything above has an async equivalent built on `sqlalchemy.ext.asyncio`'s
+`AsyncEngine`/`AsyncSession`, under `alchemical_queues.aio` /
+`alchemical_queues.tasks.aio`: `AsyncAlchemicalQueues`,
+`AsyncAlchemicalQueue`, `AsyncAlchemicalTaskQueue`, `AsyncWorker`, and
+`async_task`/`AsyncTask`/`AsyncQueuedTask`. The API is the same shape as
+the sync classes -- every method that does I/O is just `async def` instead:
+
+```python
+from sqlalchemy.ext.asyncio import create_async_engine
+from alchemical_queues.aio import AsyncAlchemicalQueues
+from alchemical_queues.tasks.aio import AsyncWorker, async_task
+from alchemical_queues.tasks.main import TaskInfo
+
+engine = create_async_engine("sqlite+aiosqlite:///example.db")
+queues = AsyncAlchemicalQueues(engine)
+await queues.create_all()
+
+@async_task
+async def add_numbers(info: TaskInfo, a: int, b: int) -> int:
+    return a + b
+
+task_queue = queues.get_task_queue("tasks")
+handle = await add_numbers(1, 2).schedule(task_queue)
+
+await AsyncWorker(task_queue).work_one()
+await handle.result()  # 3
+```
+
+Only `async def` handlers decorated with `async_task` can be run by
+`AsyncWorker` -- a sync handler decorated with `tasks.task` needs the sync
+`Worker` instead. There is no async equivalent of the `alchemical_worker`
+CLI yet; run your own script with `asyncio.run(worker.work())`, as in the
+[async_plain_python example](../examples/async_plain_python.md).
+
+See the [FastAPI example](../examples/fastapi.md) for running the worker
+as a plain `asyncio` task on a web app's own event loop, with no background
+thread needed.

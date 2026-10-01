@@ -9,8 +9,7 @@ result, using the default
 
 ```bash
 cd examples/litestar_app
-pip install litestar uvicorn
-litestar run
+uv run --with litestar,uvicorn litestar run
 ```
 
 Then, in another terminal:
