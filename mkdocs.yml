@@ -34,6 +34,7 @@ nav:
       - "api/tasks/QueuedTask.md"
       - "api/tasks/TaskInfo.md"
       - "api/tasks/TaskException.md"
+      - "api/tasks/TaskResultSerializer.md"
 
 theme:
   name: material

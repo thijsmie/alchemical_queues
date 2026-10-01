@@ -133,6 +133,43 @@ entry = queue.get()
 print(entry.data.user_id)  # type-checked as int
 ```
 
-The same `serializer=`/`get_serialized()` pair is available on `get_task_queue()`/`get_task_queue_serialized()`. A queue's serializer also governs `respond()`/`responses()`, so a non-pickle serializer must be able to handle whatever shape you pass to `respond()` too.
+The same `serializer=`/`get_serialized()` pair is available on `get_task_queue()`/`get_task_queue_serialized()`, which also take an independent `response_serializer=`: a task queue's entries (`put()`/`get()`) and its responses (`respond()`/`responses()`) are a different `AlchemicalTaskQueue[T, R]` type parameter each, with their own serializer, since a task's input and its result are usually different shapes.
 
-Write your own by subclassing `Serializer[T]` with `dumps(self, obj: T) -> bytes` and `loads(self, data: bytes) -> T`.
+```python
+from pydantic import BaseModel
+from alchemical_queues.serializers import PydanticSerializer
+
+class Job(BaseModel):
+    user_id: int
+    payload: str
+
+class JobResult(BaseModel):
+    output_url: str
+
+# get_task_queue_serialized() infers T from serializer and R from
+# response_serializer, so entry.data is a Job and responses()[i].data is a
+# JobResult -- independently serialized, no shared shape required.
+task_queue = queues.get_task_queue_serialized(
+    "job-queue", PydanticSerializer(Job), response_serializer=PydanticSerializer(JobResult)
+)
+```
+
+Write your own `Serializer` by subclassing `Serializer[T]` with `dumps(self, obj: T) -> bytes` and `loads(self, data: bytes) -> T`.
+
+### Typing a task's result with `tasks.Worker`
+
+`tasks.Worker` always responds with `{"result": ...}` on success or `{"error": ..., "error_type": ...}` on failure -- `QueuedTask.result` needs that envelope to tell the two apart. Passing a plain serializer as `response_serializer` would mean serializing that whole envelope (and would break on the failure case, which is a different shape). `tasks.TaskResultSerializer` instead wraps an inner serializer that only ever sees the *success value* -- what your task handler returns -- and keeps Worker's envelope around it:
+
+```python
+from alchemical_queues.tasks import TaskResultSerializer
+
+task_queue = queues.get_task_queue_serialized(
+    "job-queue",
+    PickleSerializer(),  # the task envelope itself (function/args/kwargs/...)
+    response_serializer=TaskResultSerializer(PydanticSerializer(JobResult)),
+)
+
+handle = run_job(...).schedule(task_queue)
+tasks.Worker(task_queue).work_one()
+handle.result  # a JobResult, or a TaskException on failure -- same as always
+```
