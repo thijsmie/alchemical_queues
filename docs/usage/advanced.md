@@ -20,7 +20,8 @@ print(queue.get().data)  # prints 0
 This argument also applies to the `schedule` method for tasks.
 
 ```python
-add_numbers(1,2).schedule(queue, priority=12)
+task_queue = queues.get_task_queue("task-queue")
+add_numbers(1,2).schedule(task_queue, priority=12)
 ```
 
 
@@ -46,12 +47,13 @@ print(queue.get().data)  # will print 42
 This argument also applies to the `schedule` method for tasks.
 
 ```python
-add_numbers(1,2).schedule(queue, schedule_at=now+timedelta(seconds=30))
+task_queue = queues.get_task_queue("task-queue")
+add_numbers(1,2).schedule(task_queue, schedule_at=now+timedelta(seconds=30))
 ```
 
 ## Custom tables
 
-If you don't want to use the default `AlchemicalQueue` and `AlchemicalResponse` tables you can configure them.
+If you don't want to use the default queue and response tables you can configure them.
 
 ```python
 queues = AlchemicalQueues(
@@ -60,12 +62,29 @@ queues = AlchemicalQueues(
 )
 ```
 
-When you use `alchemical_worker` it will use the default names. You can run the worker via python on your custom queues.
+The `alchemical_worker` CLI's plain `alchemical_worker <engine-url> <queue>` form always uses the default table names and no shared base, since it only has an engine URL to go on. To run it against custom table names (or a shared `base=`, see below), use `--import` instead, pointing it at a module-level `AlchemicalQueues` instance in your own code:
+
+```bash
+alchemical_worker --import myapp.queues:queues task-queue
+```
+
+```python
+# myapp/queues.py
+from alchemical_queues import AlchemicalQueues
+
+queues = AlchemicalQueues(
+    engine,
+    queue_tablename="queues",
+    response_tablename="responses",
+)
+```
+
+Or run it via Python yourself, same as with the default tables:
 
 ```python
 from alchemical_queues.tasks import Worker
 
-Worker(queues.get("task-queue")).work()
+Worker(queues.get_task_queue("task-queue")).work()
 ```
 
 ## Sharing a declarative base
@@ -82,4 +101,4 @@ queues = AlchemicalQueues(engine, base=Base)
 queues.create_all()  # also creates any other tables defined on Base
 ```
 
-This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way.
+This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way. As above, run `alchemical_worker --import myapp.queues:queues task-queue` against it rather than the plain engine-URL form.

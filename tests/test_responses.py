@@ -4,7 +4,7 @@ from alchemical_queues import AlchemicalQueue, AlchemicalQueues
 
 
 def test_respond(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
     job = q.get()
 
@@ -19,4 +19,3 @@ def test_respond(queue: AlchemicalQueues):
     assert response.data == "test"
     assert response.delivered_at > job.enqueued_at
     assert response.cleanup_at is None
-

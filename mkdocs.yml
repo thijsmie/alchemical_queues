@@ -19,8 +19,10 @@ nav:
     - Core:
       - "api/core/AlchemicalQueues.md"
       - "api/core/AlchemicalQueue.md"
+      - "api/core/AlchemicalTaskQueue.md"
       - "api/core/AlchemicalEntry.md"
       - "api/core/AlchemicalResponse.md"
+      - "api/core/ClaimExpired.md"
     - Tasks:
       - task: "api/tasks/task.md"
       - "api/tasks/Worker.md"

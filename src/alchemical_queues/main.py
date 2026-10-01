@@ -1,19 +1,60 @@
 """Implementation of Alchemical Queues"""
 
 import pickle
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Union, Type, cast, Generic, TypeVar
 
-from sqlalchemy import or_, delete, select, func, DateTime, Integer, Text, LargeBinary
+from sqlalchemy import (
+    or_,
+    delete,
+    select,
+    update,
+    func,
+    DateTime,
+    Integer,
+    BigInteger,
+    Text,
+    LargeBinary,
+)
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.engine import Engine
+
+DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 
 
 T = TypeVar("T")
 
 # Dialects whose SELECT ... FOR UPDATE supports SKIP LOCKED, used to make
-# concurrent AlchemicalQueue.get() calls avoid contending on the same rows.
+# concurrent AlchemicalTaskQueue.get() calls avoid contending on the same rows.
 _SKIP_LOCKED_DIALECTS = frozenset({"postgresql", "mysql", "oracle"})
+
+
+def _new_claim_token() -> int:
+    # A fresh random value per claim (not the entry_id, not a counter): this
+    # is what lets release()/discard()/extend() tell "I still hold today's
+    # claim on this entry" apart from "I held a claim on this entry that's
+    # since moved on to someone else", even though the entry_id is identical
+    # in both cases.
+    return secrets.randbits(63)
+
+
+class ClaimExpired(Exception):
+    """Raised by AlchemicalTaskQueue's release()/discard()/extend() when the
+    entry_id/claim_token pair they were given no longer matches a live
+    claim: it already timed out and was reclaimed by someone else, or was
+    already responded to, released, or discarded. Whatever you were about
+    to do with this claim, don't trust it -- someone else may already have,
+    or may still.
+    """
+
+    def __init__(self, entry_id: int):
+        super().__init__(
+            f"entry_id={entry_id} is not currently claimed under the given claim_token "
+            "(it may have timed out and been reclaimed, or already been responded to, "
+            "released, or discarded)"
+        )
+        self.entry_id = entry_id
 
 
 def _generate_models(
@@ -52,6 +93,21 @@ def _generate_models(
         )
         priority: Mapped[int] = mapped_column(Integer, nullable=False)
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
+        # Only ever set by AlchemicalTaskQueue.get(); stays NULL for entries
+        # only ever touched through plain AlchemicalQueue. A claimed entry
+        # past this timestamp is treated as abandoned and becomes claimable
+        # again, so a worker that dies mid-task doesn't lose the entry
+        # silently forever.
+        claimed_until: Mapped[Union[datetime, None]] = mapped_column(
+            DateTime(timezone=True), nullable=True
+        )
+        # A fresh random value set alongside claimed_until on every claim.
+        # AlchemicalTaskQueue's release()/discard()/extend() require the
+        # caller to present the value they were given, so a claim holder
+        # that's been superseded by a later claim (same entry_id, new
+        # claim_token) can't mistake itself for the current one -- see
+        # ClaimExpired.
+        claim_token: Mapped[Union[int, None]] = mapped_column(BigInteger, nullable=True)
 
     class Response(base):  # type: ignore[misc,valid-type]
         """SQLAlchemy model for a Task Result."""
@@ -103,6 +159,7 @@ class AlchemicalQueues:
             queue_tablename, response_tablename, base
         )
         self._queues: Dict[str, "AlchemicalQueue"] = {}
+        self._task_queues: Dict[str, "AlchemicalTaskQueue"] = {}
 
     def set_engine(self, engine: Engine) -> None:
         """Set the SQLAlchemy engine post-initialization
@@ -141,7 +198,12 @@ class AlchemicalQueues:
             session.commit()
 
     def get(self, key: str) -> "AlchemicalQueue[Any]":
-        """Get a Queue instance
+        """Get a plain Queue instance: `put()`/`get()`/`qsize()`/`empty()`/`clear()`,
+        where `get()` removes the entry immediately. If your process dies
+        between `get()` and finishing whatever you needed the entry for, the
+        entry is simply gone -- there's no redelivery. For that (and for
+        result-tracking via `respond()`/`responses()`), see
+        [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
 
         Args:
             key (str): The name of the queue you wish to access.
@@ -153,9 +215,7 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._queues:
-            self._queues[key] = AlchemicalQueue(
-                self._engine, self._qmodel, self._rmodel, key
-            )
+            self._queues[key] = AlchemicalQueue(self._engine, self._qmodel, key)
 
         return self._queues[key]
 
@@ -172,15 +232,82 @@ class AlchemicalQueues:
         # pylint: disable=unused-argument
         return cast(AlchemicalQueue[T], self.get(key))
 
+    def get_task_queue(
+        self,
+        key: str,
+        *,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ) -> "AlchemicalTaskQueue[Any]":
+        """Get an [AlchemicalTaskQueue][alchemical_queues.AlchemicalTaskQueue]
+        instance: `get()` claims an entry rather than removing it, with
+        `release()`/`discard()`/`extend()` to manage that claim and
+        `respond()`/`responses()` to record and retrieve results. This is
+        what [tasks.Worker][alchemical_queues.tasks.Worker] requires.
+
+        Args:
+            key (str): The name of the queue you wish to access.
+            visibility_timeout (timedelta, optional): how long a claimed entry
+                stays claimed before it becomes claimable again if nobody has
+                responded to or released it. Only takes effect the first time
+                this queue name is requested; later calls return the same
+                cached AlchemicalTaskQueue instance.
+
+        Returns:
+            AlchemicalTaskQueue
+        """
+        if self._engine is None:
+            raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
+
+        if key not in self._task_queues:
+            self._task_queues[key] = AlchemicalTaskQueue(
+                self._engine, self._qmodel, self._rmodel, key, visibility_timeout
+            )
+
+        return self._task_queues[key]
+
+    def get_task_queue_typed(
+        self,
+        key: str,
+        typeof: Type[T],
+        *,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ) -> "AlchemicalTaskQueue[T]":
+        """Get a typed AlchemicalTaskQueue instance
+
+        Args:
+            key (str): The name of the queue you wish to access.
+            typeof (Type[T]): The type of the queue you wish to use
+            visibility_timeout (timedelta, optional): see
+                [get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
+
+        Returns:
+            AlchemicalTaskQueue[T]
+        """
+        # pylint: disable=unused-argument
+        return cast(
+            AlchemicalTaskQueue[T],
+            self.get_task_queue(key, visibility_timeout=visibility_timeout),
+        )
+
 
 class AlchemicalQueue(Generic[T]):
-    """An Alchemical Queue. It is not intended to be initialized by a user, go through
-    [AlchemicalQueues][alchemical_queues.AlchemicalQueues] instead."""
+    """A plain Alchemical Queue: put an item in, get the highest-priority one
+    back out. `get()` removes the entry immediately -- there's no claim to
+    manage, nothing to acknowledge, and no redelivery if your process dies
+    partway through handling what it returned. It is not intended to be
+    initialized by a user, go through
+    [AlchemicalQueues][alchemical_queues.AlchemicalQueues] instead.
 
-    def __init__(self, engine: Engine, model, response_model, name: str):
+    If you need crash-safe delivery (an entry comes back if the worker that
+    claimed it dies before finishing), retries, or a way to record and poll
+    for a result, use
+    [AlchemicalQueues.get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue]
+    instead.
+    """
+
+    def __init__(self, engine: Engine, model, name: str):
         self._engine = engine
         self._model = model
-        self._response_model = response_model
         self._name = name
         self._session = sessionmaker(
             engine,
@@ -227,7 +354,7 @@ class AlchemicalQueue(Generic[T]):
             return AlchemicalEntry(entry, item)
 
     def get(self) -> Union["AlchemicalEntry[T]", None]:
-        """Get the highest priority entry out from the queue
+        """Get the highest priority entry out from the queue, removing it.
 
         Returns:
             (AlchemicalEntry | None): The popped entry, or None if the queue is empty (or nothing is scheduled yet)
@@ -237,11 +364,9 @@ class AlchemicalQueue(Generic[T]):
 
         with self._session() as session:
             # Picking the candidate row and deleting it happen in one atomic
-            # DELETE ... RETURNING statement, so two concurrent get() calls can
-            # never pop the same entry. This needs no special transaction
-            # isolation (previously SQLite needed a global BEGIN EXCLUSIVE,
-            # which serialized every transaction on the engine, including ones
-            # from unrelated code sharing the same engine).
+            # DELETE ... RETURNING statement, so two concurrent get() calls
+            # can never pop the same entry, with no extra transaction
+            # isolation needed for that guarantee to hold.
             candidate = (
                 select(self._model.entry_id)
                 .filter(
@@ -315,10 +440,348 @@ class AlchemicalQueue(Generic[T]):
             )
             session.commit()
 
+
+class AlchemicalTaskQueue(Generic[T]):
+    """An Alchemical Queue with crash-safe delivery: `get()` claims an entry
+    rather than removing it, `release()`/`discard()`/`extend()` manage that
+    claim, and `respond()`/`responses()` record and retrieve a result for a
+    given entry. This is the queue [tasks.Worker][alchemical_queues.tasks.Worker]
+    is built on. It is not intended to be initialized by a user, go through
+    [AlchemicalQueues.get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue]
+    instead.
+
+    If you just want a plain FIFO/priority queue and don't need redelivery,
+    retries, or result tracking, use
+    [AlchemicalQueues.get][alchemical_queues.AlchemicalQueues.get] /
+    [AlchemicalQueue][alchemical_queues.AlchemicalQueue] instead -- it has a
+    much smaller surface.
+    """
+
+    def __init__(
+        self,
+        engine: Engine,
+        model,
+        response_model,
+        name: str,
+        visibility_timeout: timedelta = DEFAULT_VISIBILITY_TIMEOUT,
+    ):
+        self._engine = engine
+        self._model = model
+        self._response_model = response_model
+        self._name = name
+        self._visibility_timeout = visibility_timeout
+        self._session = sessionmaker(
+            engine,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+
+    @property
+    def name(self) -> str:
+        """The name of the queue"""
+        return self._name
+
+    @property
+    def visibility_timeout(self) -> timedelta:
+        """The default visibility_timeout this queue's `get()` calls use."""
+        return self._visibility_timeout
+
+    def put(
+        self,
+        item: T,
+        *,
+        schedule_at: Union[datetime, None] = None,
+        priority: int = 0,
+    ) -> "AlchemicalEntry[T]":
+        """Put an entry into the queue
+
+        Args:
+            item (Any): The item you wish to add to the queue. It must be pickle-able.
+            schedule_at (datetime | None, optional): Earliest timestamp this entry may be claimed.
+            priority (int, optional): Entry priority. Entries are claimed first in order of priority and then
+                                      in order of adding to the queue.
+
+        Returns:
+            AlchemicalEntry[T]: The resultant queue entry.
+        """
+
+        entry = self._model(
+            enqueued_at=datetime.now(),
+            schedule_at=schedule_at,
+            priority=priority,
+            queue_name=self._name,
+            data=pickle.dumps(item),
+        )
+
+        with self._session() as session:
+            session.add(entry)
+            session.commit()
+
+            return AlchemicalEntry(entry, item)
+
+    def get(
+        self, *, visibility_timeout: Union[timedelta, None] = None
+    ) -> Union["AlchemicalEntry[T]", None]:
+        """Claim the highest priority entry from the queue.
+
+        The entry is not removed by this call: it is marked claimed until
+        `visibility_timeout` elapses, so if your process dies before you call
+        [release][alchemical_queues.AlchemicalTaskQueue.release] or
+        [discard][alchemical_queues.AlchemicalTaskQueue.discard] for it, a
+        later `get()` call will eventually claim it again instead of the
+        entry being lost. Call `discard()` (after `respond()`, if you have a
+        result) or `release()` (if you want it retried sooner than the
+        timeout) as soon as you're done with an entry to free it up
+        immediately, rather than waiting out the timeout. For work that can
+        run longer than `visibility_timeout`, call
+        [extend][alchemical_queues.AlchemicalTaskQueue.extend] periodically to
+        push the deadline out while you're still on it.
+
+        The returned entry's `claim_token` identifies *this* claim
+        specifically -- pass it to `release()`/`discard()`/`extend()` so they
+        only affect it, even if your claim has since timed out and been
+        reclaimed by someone else (same entry_id, different claim_token).
+
+        Args:
+            visibility_timeout (timedelta | None, optional): how long this entry
+                stays claimed before it becomes claimable again. Defaults to the
+                visibility_timeout this queue was obtained with (see
+                [AlchemicalQueues.get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue]).
+
+        Returns:
+            (AlchemicalEntry | None): The claimed entry, or None if the queue is empty
+            (or nothing is claimable/scheduled yet)
+        """
+
+        timestamp = datetime.now()
+        timeout = (
+            visibility_timeout
+            if visibility_timeout is not None
+            else self._visibility_timeout
+        )
+        token = _new_claim_token()
+
+        with self._session() as session:
+            # Picking the candidate row and claiming it happen in one atomic
+            # UPDATE ... RETURNING statement, so two concurrent get() calls can
+            # never claim the same entry. This needs no special transaction
+            # isolation (previously SQLite needed a global BEGIN EXCLUSIVE,
+            # which serialized every transaction on the engine, including ones
+            # from unrelated code sharing the same engine).
+            candidate = (
+                select(self._model.entry_id)
+                .filter(
+                    self._model.queue_name == self._name,
+                    or_(
+                        self._model.schedule_at == None,  # pylint: disable=C0121
+                        self._model.schedule_at <= timestamp,  # type: ignore
+                    ),
+                    or_(
+                        self._model.claimed_until == None,  # pylint: disable=C0121
+                        self._model.claimed_until <= timestamp,  # type: ignore
+                    ),
+                )
+                .order_by(self._model.priority.desc(), self._model.entry_id.asc())  # type: ignore
+                .limit(1)
+            )
+
+            if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
+                candidate = candidate.with_for_update(skip_locked=True)
+
+            item = session.execute(
+                update(self._model)
+                .where(self._model.entry_id == candidate.scalar_subquery())
+                .values(claimed_until=timestamp + timeout, claim_token=token)
+                .returning(self._model)
+            ).scalar_one_or_none()
+
+            if item is None:
+                session.rollback()
+                return None
+
+            entry = AlchemicalEntry(item, pickle.loads(item.data))
+            session.commit()
+
+        return entry
+
+    def release(self, entry_id: int, claim_token: int) -> None:
+        """Release a claimed entry back to the queue, without recording a
+        response for it. The entry itself is kept -- it becomes claimable
+        again immediately, same as if its visibility timeout had just
+        elapsed, instead of whoever's turn it is next having to wait that
+        out.
+
+        Use this when you called [get][alchemical_queues.AlchemicalTaskQueue.get],
+        decided you have nothing to respond with yet (you want it retried
+        sooner than the timeout, or by someone else), and don't want to
+        discard it. To remove an entry entirely without a response, see
+        [discard][alchemical_queues.AlchemicalTaskQueue.discard].
+
+        Args:
+            entry_id (int): the entry_id you wish to release.
+            claim_token (int): the claim_token from the `get()` call that
+                claimed this entry (`AlchemicalEntry.claim_token`).
+
+        Raises:
+            ClaimExpired: if entry_id isn't currently claimed under claim_token.
+        """
+
+        if not isinstance(entry_id, int):
+            raise TypeError(f"entry_id={entry_id} should be integer")
+
+        with self._session() as session:
+            result = session.execute(
+                update(self._model)
+                .where(
+                    self._model.entry_id == entry_id,
+                    self._model.claim_token == claim_token,
+                )
+                .values(claimed_until=None, claim_token=None)
+            )
+            session.commit()
+
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise ClaimExpired(entry_id)
+
+    def discard(self, entry_id: int, claim_token: int) -> None:
+        """Remove a claimed entry from the queue entirely, without recording
+        a response for it. Unlike [release][alchemical_queues.AlchemicalTaskQueue.release],
+        the entry does not become claimable again -- it's simply gone, the same
+        as if [respond][alchemical_queues.AlchemicalTaskQueue.respond] had been
+        called but without creating a response.
+
+        Args:
+            entry_id (int): the entry_id you wish to discard.
+            claim_token (int): the claim_token from the `get()` call that
+                claimed this entry (`AlchemicalEntry.claim_token`).
+
+        Raises:
+            ClaimExpired: if entry_id isn't currently claimed under claim_token.
+        """
+
+        if not isinstance(entry_id, int):
+            raise TypeError(f"entry_id={entry_id} should be integer")
+
+        with self._session() as session:
+            result = session.execute(
+                delete(self._model).where(
+                    self._model.entry_id == entry_id,
+                    self._model.claim_token == claim_token,
+                )
+            )
+            session.commit()
+
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise ClaimExpired(entry_id)
+
+    def extend(
+        self,
+        entry_id: int,
+        claim_token: int,
+        *,
+        by: Union[timedelta, None] = None,
+    ) -> None:
+        """Extend a claim's visibility timeout, for work that can take longer
+        than it. Call this periodically while you're still actively on an
+        entry (a keepalive) to push its claim's expiry further out, so it
+        isn't redelivered to another `get()` call while you're still working
+        on it. [tasks.Worker][alchemical_queues.tasks.Worker] can do this for
+        you automatically; see its `keepalive_every` argument.
+
+        Args:
+            entry_id (int): the entry_id whose claim you wish to extend.
+            claim_token (int): the claim_token from the `get()` call that
+                claimed this entry (`AlchemicalEntry.claim_token`).
+            by (timedelta | None, optional): how much longer the claim should
+                last from now. Defaults to this queue's configured visibility_timeout.
+
+        Raises:
+            ClaimExpired: if entry_id isn't currently claimed under claim_token
+                -- it's already timed out (and possibly been redelivered and
+                finished by someone else), so extending it further would be
+                meaningless at best and misleading at worst. Stop working.
+        """
+
+        if not isinstance(entry_id, int):
+            raise TypeError(f"entry_id={entry_id} should be integer")
+
+        timeout = by if by is not None else self._visibility_timeout
+        new_claimed_until = datetime.now() + timeout
+
+        with self._session() as session:
+            result = session.execute(
+                update(self._model)
+                .where(
+                    self._model.entry_id == entry_id,
+                    self._model.claim_token == claim_token,
+                )
+                .values(claimed_until=new_claimed_until)
+            )
+            session.commit()
+
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise ClaimExpired(entry_id)
+
+    def qsize(self) -> int:
+        """Return the approximate size of this queue.
+
+        Returns:
+            int: Queue size.
+        """
+        with self._session() as session:
+            return (
+                session.scalar(
+                    select(func.count())  # pylint: disable=not-callable
+                    .select_from(self._model)
+                    .where(self._model.queue_name == self._name)
+                )
+                or 0
+            )
+
+    def empty(self) -> bool:
+        """Return `True` if the Queue is emtpy, `False` otherwise. More efficient than
+        `qsize() > 0`.
+
+        Returns:
+            bool: wether the Queue is empty.
+        """
+        with self._session() as session:
+            return (
+                session.scalar(
+                    select(self._model.entry_id)
+                    .where(self._model.queue_name == self._name)
+                    .limit(1)
+                )
+                is None
+            )
+
+    def clear(self) -> None:
+        """Clear all entries from this queue. Might fail-silent an update call."""
+
+        with self._session() as session:
+            session.execute(
+                delete(self._model).where(self._model.queue_name == self._name)
+            )
+            session.commit()
+
     def respond(
         self, entry_id: int, response: Any, cleanup_at: Union[datetime, None] = None
     ) -> "AlchemicalResponse":
-        """Send a response to a queue entry. Used to implement task queues.
+        """Record a response for a queue entry. Used to implement task queues.
+
+        This only records the response -- it has no effect on a claim you may
+        be holding on entry_id (there may not even be one: it's independent
+        of [get][alchemical_queues.AlchemicalTaskQueue.get]/claim lifecycle
+        entirely, just like `responses()` is). Call
+        [discard][alchemical_queues.AlchemicalTaskQueue.discard] separately once
+        you've responded, to free up the entry you claimed.
+
+        If this entry_id belongs to a `tasks.task`-scheduled task, note that
+        [QueuedTask.result][alchemical_queues.tasks.QueuedTask.result] only
+        recognizes the `{"result": ...}`/`{"error": ..., "error_type": ...}`
+        shape `tasks.Worker` itself responds with to tell success from
+        failure -- call `respond()` directly (as here) with anything else
+        and `QueuedTask.result` just hands that value back to you unparsed.
 
         Args:
             entry_id (int): The entry_id you wish to respond to.
@@ -385,9 +848,22 @@ class AlchemicalEntry(Generic[T]):
         schedule_at (datetime | None): do not remove the entry from the queue before this time.
         priority (int): the priority of the entry.
         data (T): the data stored in this entry.
+        claim_token (int | None): identifies this specific claim, if this entry
+            came from [AlchemicalTaskQueue.get][alchemical_queues.AlchemicalTaskQueue.get]
+            (`None` for an entry from plain `AlchemicalQueue`, or from `put()`,
+            neither of which claim anything). Pass it to
+            `release()`/`discard()`/`extend()` to prove you still hold this
+            particular claim and not a since-expired one.
     """
 
-    __slots__ = ("data", "entry_id", "enqueued_at", "schedule_at", "priority")
+    __slots__ = (
+        "data",
+        "entry_id",
+        "enqueued_at",
+        "schedule_at",
+        "priority",
+        "claim_token",
+    )
 
     def __init__(
         self,
@@ -399,6 +875,7 @@ class AlchemicalEntry(Generic[T]):
         self.entry_id: int = entry.entry_id
         self.enqueued_at: datetime = entry.enqueued_at
         self.schedule_at: Union[datetime, None] = entry.schedule_at
+        self.claim_token: Union[int, None] = entry.claim_token
         self.priority: int = entry.priority
         self.data: T = data
 

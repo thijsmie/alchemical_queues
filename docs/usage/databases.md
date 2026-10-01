@@ -42,9 +42,64 @@ SQLite has no `SKIP LOCKED` support, so concurrent `get()` calls fall back to pl
 
 ## How `get()` stays safe under concurrency
 
-Every queue operation goes through the database, so *Alchemical Queues* relies on it, not application-level locks, to keep concurrent workers from stepping on each other. Picking the next entry and removing it from the queue happen as a single atomic `DELETE ... RETURNING` statement, so two workers calling `get()` at the same time can never both receive the same entry, and no extra transaction isolation level or lock is needed to make that guarantee hold.
+Every queue operation goes through the database, so *Alchemical Queues* relies on it, not application-level locks, to keep concurrent workers from stepping on each other. Picking the next entry and claiming it happen as a single atomic `UPDATE ... RETURNING` statement, so two workers calling `get()` at the same time can never both receive the same entry, and no extra transaction isolation level or lock is needed to make that guarantee hold.
 
 On PostgreSQL, MySQL and Oracle, the statement also picks its candidate row with `FOR UPDATE SKIP LOCKED`, so workers racing for entries skip past rows another worker already has locked instead of waiting on them — this is what lets many workers `get()` in parallel with minimal contention. *Alchemical Queues* detects this automatically from the SQLAlchemy engine's dialect; there is nothing to configure.
+
+## Claims and redelivery
+
+This section applies to [`AlchemicalTaskQueue`][alchemical_queues.AlchemicalTaskQueue], obtained via [`queues.get_task_queue(...)`][alchemical_queues.AlchemicalQueues.get_task_queue] — the plain [`AlchemicalQueue`][alchemical_queues.AlchemicalQueue] you get from `queues.get(...)` has none of this: its `get()` removes an entry outright, with no claims, redelivery, or `visibility_timeout` to think about. Reach for `get_task_queue()` when you need at-least-once delivery with redelivery on failure/crash — which is exactly what `alchemical_queues.tasks` builds on.
+
+`AlchemicalTaskQueue.get()` doesn't remove an entry from the queue, it *claims* it: the entry stays in the table, marked unavailable to other `get()` calls, until you call [`discard()`][alchemical_queues.AlchemicalTaskQueue.discard] (remove it for good) or [`release()`][alchemical_queues.AlchemicalTaskQueue.release] (put it back, claimable again immediately). If neither ever happens — your process crashes, gets OOM-killed, or is forcibly stopped mid-task — the claim expires after its `visibility_timeout` and the entry becomes claimable again, so a dead worker loses at most the time left on the timeout, not the task itself.
+
+Every claim carries a `claim_token` (on `entry.claim_token`), a random value fresh for that specific claim. `release()`, `discard()`, and `extend()` (below) all require it alongside the `entry_id`, and raise `ClaimExpired` if it doesn't match the entry's *current* claim. This is what keeps a worker that's running late from corrupting a claim that's since moved on to someone else: even though the entry_id is identical, a stale claim_token means "that's not your claim anymore."
+
+```python
+from alchemical_queues import ClaimExpired
+
+queue = queues.get_task_queue("pdf-generation", visibility_timeout=timedelta(minutes=10))
+
+entry = queue.get()
+if entry is not None:
+    try:
+        result = do_the_work(entry.data)
+        # Prove we still hold the claim *before* recording a response --
+        # if someone else redelivered and already finished this, discard()
+        # raises here and we never file a (now-redundant) response.
+        queue.discard(entry.entry_id, entry.claim_token)
+        queue.respond(entry.entry_id, result)
+    except ClaimExpired:
+        pass  # someone else already handled this; nothing more to do
+    except Exception:
+        queue.release(entry.entry_id, entry.claim_token)  # retry sooner than the timeout
+        raise
+```
+
+Pick a `visibility_timeout` comfortably longer than your task normally takes. `qsize()`/`empty()` count claimed-but-unreleased entries as outstanding, since the work isn't actually done yet.
+
+### Long-running work: `extend()` and `keepalive_every`
+
+If a task can run longer than `visibility_timeout`, call [`extend()`][alchemical_queues.AlchemicalTaskQueue.extend] periodically while you're still on it, to push the claim's expiry out:
+
+```python
+entry = queue.get()
+...
+queue.extend(entry.entry_id, entry.claim_token)  # pushes claimed_until further out
+```
+
+`extend()` also requires the matching `claim_token` and raises `ClaimExpired` the same way, so a worker that calls it too late — after someone else has already reclaimed the entry — finds out immediately rather than carrying on under a false assumption.
+
+`alchemical_queues.tasks.Worker` can do this automatically: pass `keepalive_every` and it runs a background thread that calls `extend()` at that interval for as long as your task handler is running, stopping as soon as it returns.
+
+```python
+from alchemical_queues.tasks import Worker
+
+Worker(queue, keepalive_every=timedelta(minutes=3)).work()
+```
+
+Without a keepalive (manual or via `Worker`), a task that outruns `visibility_timeout` risks being redelivered to, and *run* by, a second worker while the first is still on it — fencing guarantees at most one of them ever gets to record a response (the other logs a warning and discards its own result instead of risking a duplicate), but it can't stop the task's *handler* from genuinely running twice, so idempotent task bodies are worth aiming for regardless of whether you use a keepalive.
+
+`alchemical_queues.tasks.Worker` handles the claim lifecycle for you already (discard-then-respond, or discard-then-retry, in every case including crashes and keyboard interrupts) — you only need to think about `visibility_timeout` and, for long tasks, `keepalive_every` directly when using `AlchemicalTaskQueue` on its own.
 
 !!! note "entry_id / response_id uniqueness on SQLite"
 
