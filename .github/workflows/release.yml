@@ -3,9 +3,17 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. 0.2.0)"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
 
 jobs:
   publish-pypi:
@@ -18,6 +26,8 @@ jobs:
       url: https://pypi.org/project/alchemical_queues/
     steps:
     - uses: actions/checkout@v3
+      with:
+        ref: ${{ env.RELEASE_TAG }}
     - name: Install uv
       uses: astral-sh/setup-uv@v5
       with:
@@ -35,6 +45,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
       with:
+        ref: ${{ env.RELEASE_TAG }}
         fetch-depth: 0
     - name: Install uv
       uses: astral-sh/setup-uv@v5
@@ -49,6 +60,6 @@ jobs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
     - name: Deploy docs with mike
-      run: uv run mike deploy --push --update-aliases ${{ github.event.release.tag_name }} latest
+      run: uv run mike deploy --push --update-aliases ${{ env.RELEASE_TAG }} latest
     - name: Set default docs version
       run: uv run mike set-default --push latest
