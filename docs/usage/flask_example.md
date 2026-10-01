@@ -1,6 +1,10 @@
 # Flask-SQLAlchemy example
 
-This is a quick example of how to use `alchemical_queues.tasks` in a Flask context. We'll use the file `tasks.py` from the main tutorial:
+This is a quick example of how to use `alchemical_queues.tasks` in a Flask context. We'll use the file `tasks.py` from the main tutorial.
+
+!!! note "Flask-SQLAlchemy version"
+
+    *Alchemical Queues* requires SQLAlchemy 2.x. Make sure you use Flask-SQLAlchemy 3.0 or newer, since earlier releases only support SQLAlchemy 1.x.
 
 ```python
 from alchemical_queues.tasks import task

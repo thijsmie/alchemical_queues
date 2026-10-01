@@ -5,9 +5,11 @@ repo_name: thijsmie/alchemical_queues
 nav:
   - Introduction:
     - "index.md"
+    - "changelog.md"
   - Usage:
     - "usage/installation.md"
     - "usage/tutorial.md"
+    - "usage/databases.md"
     - "usage/flask_example.md"
     - "usage/advanced.md"
   - Development:
@@ -52,7 +54,7 @@ plugins:
     handlers:
       python:
         paths: [src]
-        import:
+        inventories:
         - https://docs.python.org/3/objects.inv
         options:
           docstring_style: google

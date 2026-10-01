@@ -13,11 +13,10 @@ cd alchemical_queues
 pip install .
 ```
 
-You can also use poetry to set up your development environment and run the tests:
+You can also use [uv](https://docs.astral.sh/uv/) to set up your development environment and run the tests:
 ```bash
 git clone https://github.com/thijsmie/alchemical_queues
 cd alchemical_queues
-pip install poetry
-poetry install
-poetry run pytest
+uv sync --all-groups
+uv run pytest
 ```
