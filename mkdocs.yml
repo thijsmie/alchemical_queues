@@ -12,6 +12,13 @@ nav:
     - "usage/databases.md"
     - "usage/flask_example.md"
     - "usage/advanced.md"
+  - Examples:
+    - "examples/index.md"
+    - "examples/plain_python.md"
+    - "examples/fastapi.md"
+    - "examples/flask.md"
+    - "examples/starlette.md"
+    - "examples/litestar.md"
   - Development:
     - "development/contributing.md"
     - "development/postgres.md"
