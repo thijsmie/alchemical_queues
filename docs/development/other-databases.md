@@ -24,17 +24,6 @@ docker run --name mariadb -e MARIADB_ROOT_PASSWORD=root -e MARIADB_DATABASE=aq_t
 uv run --with pymysql pytest -x --engine "mariadb+pymysql://root:root@127.0.0.1:3306/aq_test"
 ```
 
-## Oracle
-
-[`gvenzl/oracle-free`](https://github.com/gvenzl/oci-oracle-free) is the fastest-starting Oracle image available; the default service name is `FREEPDB1`.
-
-```bash
-docker run --name oracle -e ORACLE_PASSWORD=oracle -p 1521:1521 gvenzl/oracle-free:23-slim-faststart
-uv run --with oracledb pytest -x --engine "oracle+oracledb://system:oracle@127.0.0.1:1521/?service_name=FREEPDB1"
-```
-
-`python-oracledb`'s thin mode needs no Oracle Instant Client install, and the same package covers the async driver (`oracle+oracledb_async://...`).
-
 ## SQL Server (MSSQL)
 
 ```bash

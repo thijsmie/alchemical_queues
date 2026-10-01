@@ -39,15 +39,6 @@ engine = create_async_engine("mysql+asyncmy://user:password@localhost/dbname")
 
 `aiomysql` is not supported -- see [Driver limitations](#driver-limitations).
 
-## Oracle
-
-Oracle is fully supported, including the `SKIP LOCKED` optimization, via `python-oracledb` (thin mode -- no Oracle Instant Client needed), sync and async:
-
-```python
-engine = create_engine("oracle+oracledb://user:password@localhost/?service_name=FREEPDB1")
-engine = create_async_engine("oracle+oracledb_async://user:password@localhost/?service_name=FREEPDB1")
-```
-
 ## SQL Server (MSSQL)
 
 Supported via `pymssql` (sync only -- see [Driver limitations](#driver-limitations)):
@@ -78,12 +69,13 @@ SQLite has no `SKIP LOCKED` support, so concurrent `get()` calls fall back to pl
 
 - **MSSQL has no supported async driver.** The only async DBAPI SQLAlchemy offers for SQL Server (`aioodbc`) needs Microsoft's proprietary ODBC driver installed on the host, which isn't available as a plain pip install; `pymssql`, the only dependency-free driver, is sync only. Use the sync `AlchemicalQueues`/`AlchemicalTaskQueue` API against SQL Server, or an `async_task`-free `Worker` if you need to run tasks.
 - **`aiomysql` is broken against current PyMySQL (≥2.0)**, which it depends on under the hood: PyMySQL 2.x turned its `escape_bytes_prefixed` converter into a placeholder string ("DO NOT IMPORT THIS!!!") that `aiomysql` still imports and calls as a function, raising `TypeError: 'str' object is not callable` on every write. This is an upstream incompatibility between the two packages, not something *Alchemical Queues* can work around -- use `asyncmy` for async MySQL/MariaDB instead.
+- **Oracle is not currently supported.** An attempt to add it turned up widespread test failures (likely `RETURNING` of the `BLOB` entry/response data column, which Oracle restricts in ways SQLAlchemy's `RETURNING` support doesn't fully abstract) and the suite hanging indefinitely partway through, so it's been pulled out rather than shipped half-working. Tracked as a follow-up; get in touch if you need it.
 
 ## How `get()` stays safe under concurrency
 
 Every queue operation goes through the database, so *Alchemical Queues* relies on it, not application-level locks, to keep concurrent workers from stepping on each other. Picking the next entry and claiming it happen as a single atomic `UPDATE ... RETURNING` statement (or, on a dialect without `RETURNING` support, as a `SELECT ... FOR UPDATE` that locks the row followed by an `UPDATE`/`DELETE` by id within the same transaction), so two workers calling `get()` at the same time can never both receive the same entry, and no extra transaction isolation level is needed to make that guarantee hold.
 
-On PostgreSQL, MySQL, MariaDB and Oracle, the statement also picks its candidate row with `FOR UPDATE SKIP LOCKED`, so workers racing for entries skip past rows another worker already has locked instead of waiting on them — this is what lets many workers `get()` in parallel with minimal contention. *Alchemical Queues* detects this automatically from the SQLAlchemy engine's dialect; there is nothing to configure.
+On PostgreSQL, MySQL and MariaDB, the statement also picks its candidate row with `FOR UPDATE SKIP LOCKED`, so workers racing for entries skip past rows another worker already has locked instead of waiting on them — this is what lets many workers `get()` in parallel with minimal contention. *Alchemical Queues* detects this automatically from the SQLAlchemy engine's dialect; there is nothing to configure.
 
 ## Claims and redelivery
 
@@ -158,9 +150,6 @@ uv run pytest --engine "postgresql+psycopg2://user:pass@localhost/testdb"
 # MySQL / MariaDB
 uv run pytest --engine "mysql+pymysql://user:pass@localhost/testdb"
 uv run pytest --engine "mariadb+pymysql://user:pass@localhost/testdb"
-
-# Oracle
-uv run pytest --engine "oracle+oracledb://user:pass@localhost/?service_name=FREEPDB1"
 
 # SQL Server
 uv run pytest --engine "mssql+pymssql://user:pass@localhost/testdb"

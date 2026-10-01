@@ -15,6 +15,7 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -61,6 +62,7 @@ jobs:
 
   mysql:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       mysql:
@@ -103,6 +105,7 @@ jobs:
 
   mariadb:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       mariadb:
@@ -137,41 +140,9 @@ jobs:
       run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mariadb+asyncmy://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
     # aiomysql is skipped here too -- see the mysql job above.
 
-  oracle:
-    runs-on: ubuntu-latest
-
-    services:
-      oracle:
-        image: gvenzl/oracle-free:23-slim-faststart
-        env:
-          ORACLE_PASSWORD: oracle
-        options: >-
-          --health-cmd healthcheck.sh
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 10
-          --health-start-period 30s
-        ports: [ '1521:1521' ]
-
-    steps:
-    - uses: actions/checkout@v3
-    - name: Install uv
-      uses: astral-sh/setup-uv@v5
-      with:
-        version: "latest"
-    - name: Set up Python
-      run: uv python install
-    - name: Install dependencies
-      run: uv sync --all-groups
-    - name: Install python-oracledb
-      run: uv pip install oracledb
-    - name: Run tests with Oracle (oracledb, thin mode)
-      run: uv run pytest -v --engine "oracle+oracledb://system:oracle@127.0.0.1:${{ job.services.oracle.ports[1521] }}/?service_name=FREEPDB1"
-    - name: Run async tests with Oracle (oracledb, thin mode)
-      run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "oracle+oracledb_async://system:oracle@127.0.0.1:${{ job.services.oracle.ports[1521] }}/?service_name=FREEPDB1"
-
   mssql:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       mssql:
