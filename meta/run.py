@@ -1,17 +1,14 @@
-import os
-import io
-import re
-import sys
-import anybadge
-import coverage
-import subprocess
 import importlib.metadata
+import io
+import json
+import os
+import re
+import subprocess
 from pathlib import Path
 
+import anybadge
+import coverage
 from mypy import api as mypy_api
-from pylint import lint as pylint_api
-from pylint.reporters.text import TextReporter
-
 
 this_dir = Path(__file__).parent
 output_dir = this_dir / "output"
@@ -47,37 +44,31 @@ def badge_mypy():
     )
 
 
-def run_pylint():
-    out = io.StringIO()
-    reporter = TextReporter(out)
-    pylint_api.Run(
-        [f"{repo_dir / 'src' / 'alchemical_queues'}", "--score=y", "--reports=n"],
-        reporter=reporter,
-        exit=False,
+def run_ruff_lint():
+    out = subprocess.run(
+        ["ruff", "check", "--output-format=json", str(repo_dir / "src")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return len(json.loads(out.stdout or "[]"))
+
+
+def badge_ruff_lint():
+    issues = run_ruff_lint()
+    value = "clean" if issues == 0 else f"{issues} issues"
+    return anybadge.Badge(
+        "ruff",
+        value,
+        default_color="green" if issues == 0 else "red",
+        **badge_common,
     )
 
-    m = re.search(r"rated at ([\d\.]+)/", out.getvalue())
 
-    try:
-        if m:
-            score = float(m.group(1))
-        else:
-            score = 0.0
-    except ValueError:
-        score = 0.0
-
-    return score
-
-
-def badge_pylint():
-    thresholds = {8: "red", 9: "orange", 9.5: "yellow", 10.0: "green"}
-    return anybadge.Badge("pylint", run_pylint(), thresholds=thresholds, **badge_common)
-
-
-def run_black():
+def run_ruff_format():
     return (
         subprocess.call(
-            ["black", "--check", str(repo_dir / "src")],
+            ["ruff", "format", "--check", str(repo_dir / "src")],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -85,10 +76,10 @@ def run_black():
     )
 
 
-def badge_black():
-    if run_black():
+def badge_ruff_format():
+    if run_ruff_format():
         return anybadge.Badge(
-            "formatting", "black", default_color="black", **badge_common
+            "formatting", "ruff", default_color="black", **badge_common
         )
     else:
         return anybadge.Badge("formatting", "fail", default_color="red", **badge_common)
@@ -151,26 +142,9 @@ def badges():
     )
     write_badge("version", badge_version())
     write_badge("mypy", badge_mypy())
-    write_badge("pylint", badge_pylint())
-    write_badge("formatting", badge_black())
+    write_badge("ruff", badge_ruff_lint())
+    write_badge("formatting", badge_ruff_format())
     write_badge("coverage", badge_coverage())
 
 
-def pr_commentary():
-    return f"""# PR metrics
-
- - *mypy*: {run_mypy()[1]}
- - *pylint*: {run_pylint()}
- - *formatting*: {':+1:' if run_black() else ':-1:'}
-
-## Code coverage
-```
-{run_coverage()[1]}
-```
-"""
-
-
-if sys.argv[1] == "badges":
-    badges()
-else:
-    print(pr_commentary())
+badges()

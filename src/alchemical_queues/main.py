@@ -3,22 +3,22 @@
 import pickle
 import secrets
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Union, Type, cast, Generic, TypeVar
+from typing import Any, Dict, Generic, List, Type, TypeVar, Union, cast
 
 from sqlalchemy import (
-    or_,
-    delete,
-    select,
-    update,
-    func,
+    BigInteger,
     DateTime,
     Integer,
-    BigInteger,
-    Text,
     LargeBinary,
+    Text,
+    delete,
+    func,
+    or_,
+    select,
+    update,
 )
-from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 
@@ -372,7 +372,7 @@ class AlchemicalQueue(Generic[T]):
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
-                        self._model.schedule_at == None,  # pylint: disable=C0121
+                        self._model.schedule_at == None,  # noqa: E711 (SQLAlchemy requires == None for IS NULL)
                         self._model.schedule_at <= timestamp,  # type: ignore
                     ),
                 )
@@ -573,11 +573,11 @@ class AlchemicalTaskQueue(Generic[T]):
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
-                        self._model.schedule_at == None,  # pylint: disable=C0121
+                        self._model.schedule_at == None,  # noqa: E711 (SQLAlchemy requires == None for IS NULL)
                         self._model.schedule_at <= timestamp,  # type: ignore
                     ),
                     or_(
-                        self._model.claimed_until == None,  # pylint: disable=C0121
+                        self._model.claimed_until == None,  # noqa: E711 (SQLAlchemy requires == None for IS NULL)
                         self._model.claimed_until <= timestamp,  # type: ignore
                     ),
                 )
@@ -824,7 +824,7 @@ class AlchemicalTaskQueue(Generic[T]):
 
             session.execute(
                 delete(self._response_model).where(
-                    self._response_model.cleanup_at != None,  # pylint: disable=C0121
+                    self._response_model.cleanup_at != None,  # noqa: E711 (SQLAlchemy requires == None for IS NULL)
                     self._response_model.cleanup_at < now,
                 )
             )

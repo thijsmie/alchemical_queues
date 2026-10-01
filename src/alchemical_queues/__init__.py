@@ -1,14 +1,14 @@
 """Alchemical Queues: safe distributed queues built on SQLAlchemy."""
 
+from . import tasks
 from .main import (
-    AlchemicalQueues,
-    AlchemicalQueue,
-    AlchemicalTaskQueue,
     AlchemicalEntry,
+    AlchemicalQueue,
+    AlchemicalQueues,
     AlchemicalResponse,
+    AlchemicalTaskQueue,
     ClaimExpired,
 )
-from . import tasks
 
 __title__ = "Alchemical Queues"
 __author__ = "Thijs Miedema"

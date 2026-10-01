@@ -129,9 +129,9 @@ def test_chaos_claims_never_lose_or_duplicate(queue_factory):
     duplicated = {i: c for i, c in success_counts.items() if c > 1}
 
     assert not missing, f"{len(missing)} tasks were lost: {missing[:10]}"
-    assert (
-        not duplicated
-    ), f"{len(duplicated)} tasks got duplicate responses: {duplicated}"
+    assert not duplicated, (
+        f"{len(duplicated)} tasks got duplicate responses: {duplicated}"
+    )
     assert drain_q.qsize() == 0
 
 
@@ -180,9 +180,9 @@ def test_long_running_task_without_keepalive_discards_stale_result(queue_factory
     thread_b.join(timeout=5)
 
     responses = q.responses(entry.entry_id)
-    assert (
-        len(responses) == 1
-    ), f"expected exactly one response despite redelivery, got {len(responses)}"
+    assert len(responses) == 1, (
+        f"expected exactly one response despite redelivery, got {len(responses)}"
+    )
 
 
 def test_long_running_task_with_keepalive_prevents_redelivery(queue_factory):

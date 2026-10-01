@@ -1,10 +1,12 @@
 """The command line interface `alchemical_worker`."""
 
-import sys
 import argparse
 import importlib
+import sys
 from datetime import timedelta
+
 from sqlalchemy.engine import create_engine
+
 from alchemical_queues import AlchemicalQueues
 from alchemical_queues.tasks import Worker
 

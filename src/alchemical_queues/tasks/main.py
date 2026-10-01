@@ -1,13 +1,15 @@
 """Implementation of the Alchemical Task Queues"""
 
-import time
 import threading
+import time
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
-from typing import Callable, TypeVar, Union, Generic, Dict, cast, Any, NoReturn
-from typing_extensions import ParamSpec, Concatenate
-from ..main import AlchemicalTaskQueue, AlchemicalEntry, ClaimExpired
+from typing import Any, Callable, Dict, Generic, NoReturn, TypeVar, Union, cast
+
+from typing_extensions import Concatenate, ParamSpec
+
+from ..main import AlchemicalEntry, AlchemicalTaskQueue, ClaimExpired
 
 
 class TaskInfo:
