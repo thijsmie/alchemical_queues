@@ -17,6 +17,7 @@
 
 - `AlchemicalQueue.get()` and `AlchemicalTaskQueue.get()` now work on MySQL and MariaDB. Both previously assumed `DELETE`/`UPDATE ... RETURNING` was available on every dialect in `FOR UPDATE SKIP LOCKED`'s allowlist; MySQL supports no `RETURNING` at all, and MariaDB supports it for `DELETE` but not `UPDATE`, so every `AlchemicalTaskQueue.get()` call (and, on MySQL, every `AlchemicalQueue.get()` call too) raised instead of claiming/popping an entry. Both methods now fall back to locking the candidate row first (`SELECT ... FOR UPDATE [SKIP LOCKED]`) and issuing a plain `UPDATE`/`DELETE` by id in the same transaction when the dialect can't do it atomically via `RETURNING`.
 - The queue table's `queue_name` column was `Text`, indexed -- MySQL/MariaDB can't put an index on an unbounded `TEXT`/`BLOB` column (`create_all()` raised `1170 (42000): BLOB/TEXT column ... used in key specification without a key length`), so `AlchemicalQueues(engine=...).create_all()` never worked on either. It's now `String(255)`, which is portable across every supported backend.
+- Every timestamp column (`enqueued_at`, `schedule_at`, `claimed_until`, `delivered_at`, `cleanup_at`) now requests microsecond precision explicitly on MySQL/MariaDB (`DATETIME(6)`). Unlike PostgreSQL and SQLite, MySQL's `DATETIME` silently rounds to whole seconds unless asked otherwise, which broke anything comparing timestamps less than a second apart -- `visibility_timeout`/`schedule_at` under a second, `extend()`, and ordering entries enqueued within the same second.
 
 ## Version 0.2.0
 

@@ -16,6 +16,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -43,6 +44,18 @@ def _supports_returning(engine: Union[Engine, "AsyncEngine"], kind: str) -> bool
     supports `DELETE ... RETURNING` but not `UPDATE ... RETURNING`.
     """
     return bool(getattr(engine.dialect, f"{kind}_returning", False))
+
+
+def _datetime_column() -> DateTime:
+    # MySQL/MariaDB's DATETIME has no fractional-second precision unless
+    # asked for explicitly (unlike PostgreSQL/SQLite, which always keep
+    # microseconds), which silently rounds every timestamp in this table to
+    # the nearest whole second -- fatal for visibility_timeout/schedule_at
+    # comparisons well under a second, and for ordering entries scheduled
+    # within the same second.
+    return DateTime(timezone=True).with_variant(
+        mysql.DATETIME(fsp=6), "mysql", "mariadb"
+    )
 
 
 def _new_claim_token() -> int:
@@ -101,10 +114,10 @@ def _generate_models(
         queue_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
         enqueued_at: Mapped[datetime] = mapped_column(
-            DateTime(timezone=True), nullable=False
+            _datetime_column(), nullable=False
         )
         schedule_at: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         priority: Mapped[int] = mapped_column(Integer, nullable=False)
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
@@ -114,7 +127,7 @@ def _generate_models(
         # again, so a worker that dies mid-task doesn't lose the entry
         # silently forever.
         claimed_until: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         # A fresh random value set alongside claimed_until on every claim.
         # AlchemicalTaskQueue's release()/discard()/extend() require the
@@ -137,10 +150,10 @@ def _generate_models(
         entry_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
 
         delivered_at: Mapped[datetime] = mapped_column(
-            DateTime(timezone=True), nullable=False
+            _datetime_column(), nullable=False
         )
         cleanup_at: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
 
