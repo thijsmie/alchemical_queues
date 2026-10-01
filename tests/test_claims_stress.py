@@ -39,7 +39,7 @@ def test_chaos_claims_never_lose_or_duplicate(queue_factory):
     visibility_timeout = timedelta(milliseconds=60)
 
     seed_q: AlchemicalQueues = queue_factory()
-    q = seed_q.get("chaos", visibility_timeout=visibility_timeout)
+    q = seed_q.get_task_queue("chaos", visibility_timeout=visibility_timeout)
     seeded_ids = [q.put(i).entry_id for i in range(num_tasks)]
 
     success_counts: Counter = Counter()
@@ -51,7 +51,9 @@ def test_chaos_claims_never_lose_or_duplicate(queue_factory):
 
     def worker(worker_id: int, queue_factory_fn: Callable[[], AlchemicalQueues]):
         try:
-            wq = queue_factory_fn().get("chaos", visibility_timeout=visibility_timeout)
+            wq = queue_factory_fn().get_task_queue(
+                "chaos", visibility_timeout=visibility_timeout
+            )
             rng = random.Random(worker_id * 7919 + 13)
             while time.time() < stop_at:
                 entry = wq.get()
@@ -105,7 +107,9 @@ def test_chaos_claims_never_lose_or_duplicate(queue_factory):
 
     # Drain phase: finish off anything left (claimed-but-abandoned, or just
     # unlucky) deterministically, using the same discard-then-respond order.
-    drain_q = queue_factory().get("chaos", visibility_timeout=visibility_timeout)
+    drain_q = queue_factory().get_task_queue(
+        "chaos", visibility_timeout=visibility_timeout
+    )
     drain_deadline = time.time() + visibility_timeout.total_seconds() * 50 + 5.0
     while drain_q.qsize() > 0 and time.time() < drain_deadline:
         entry = drain_q.get()
@@ -141,15 +145,15 @@ def test_long_running_task_without_keepalive_discards_stale_result(queue_factory
     """
 
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("slow", visibility_timeout=timedelta(milliseconds=150))
+    q = aq.get_task_queue("slow", visibility_timeout=timedelta(milliseconds=150))
     entry = slow_task(0.4).schedule(q)
 
     worker_a_done = threading.Event()
 
     def run_worker_a():
-        Worker(aq.get("slow"), poll_every=timedelta(milliseconds=20)).work_one(
-            block=True
-        )
+        Worker(
+            aq.get_task_queue("slow"), poll_every=timedelta(milliseconds=20)
+        ).work_one(block=True)
         worker_a_done.set()
 
     thread_a = threading.Thread(target=run_worker_a)
@@ -160,7 +164,10 @@ def test_long_running_task_without_keepalive_discards_stale_result(queue_factory
     stop_b = threading.Event()
 
     def run_worker_b():
-        wb = Worker(queue_factory().get("slow"), poll_every=timedelta(milliseconds=15))
+        wb = Worker(
+            queue_factory().get_task_queue("slow"),
+            poll_every=timedelta(milliseconds=15),
+        )
         while not stop_b.is_set():
             wb.work_one(block=False)
             time.sleep(0.015)
@@ -185,7 +192,7 @@ def test_long_running_task_with_keepalive_prevents_redelivery(queue_factory):
     """
 
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("slow", visibility_timeout=timedelta(milliseconds=150))
+    q = aq.get_task_queue("slow", visibility_timeout=timedelta(milliseconds=150))
     entry = slow_task(0.4).schedule(q)
 
     run_count = 0
@@ -194,7 +201,7 @@ def test_long_running_task_with_keepalive_prevents_redelivery(queue_factory):
     def run_worker_a():
         nonlocal run_count
         w = Worker(
-            aq.get("slow"),
+            aq.get_task_queue("slow"),
             poll_every=timedelta(milliseconds=20),
             keepalive_every=timedelta(milliseconds=40),
         )
@@ -210,7 +217,10 @@ def test_long_running_task_with_keepalive_prevents_redelivery(queue_factory):
     redelivered = threading.Event()
 
     def run_worker_b():
-        wb = Worker(queue_factory().get("slow"), poll_every=timedelta(milliseconds=15))
+        wb = Worker(
+            queue_factory().get_task_queue("slow"),
+            poll_every=timedelta(milliseconds=15),
+        )
         while not stop_b.is_set():
             claimed = wb.queue.get()
             if claimed is not None:

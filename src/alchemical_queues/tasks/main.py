@@ -7,7 +7,7 @@ from logging import getLogger
 from pydoc import locate
 from typing import Callable, TypeVar, Union, Generic, Dict, cast, Any, NoReturn
 from typing_extensions import ParamSpec, Concatenate
-from ..main import AlchemicalQueue, AlchemicalEntry, ClaimExpired
+from ..main import AlchemicalTaskQueue, AlchemicalEntry, ClaimExpired
 
 
 class TaskInfo:
@@ -29,7 +29,7 @@ class Worker:
     """Worker implementation that can take tasks from queues and execute them.
 
     Attributes:
-        queue (AlchemicalQueue): the queue this worker runs on
+        queue (AlchemicalTaskQueue): the queue this worker runs on
         poll_every (timedelta): how often to poll for new tasks
         keepalive_every (timedelta | None): how often to extend a task's claim
             while it's still running. See `__init__`.
@@ -37,14 +37,15 @@ class Worker:
 
     def __init__(
         self,
-        queue: AlchemicalQueue,
+        queue: AlchemicalTaskQueue,
         poll_every: timedelta = timedelta(seconds=1),
         *,
         keepalive_every: Union[timedelta, None] = None,
     ):
         """
         Args:
-            queue (AlchemicalQueue): the queue this worker runs on.
+            queue (AlchemicalTaskQueue): the queue this worker runs on. Obtain
+                one via [AlchemicalQueues.get_task_queue][alchemical_queues.AlchemicalQueues.get_task_queue].
             poll_every (timedelta, optional): how often to poll for new tasks
                 when the queue is empty.
             keepalive_every (timedelta | None, optional): if set, a background
@@ -100,7 +101,9 @@ class Worker:
 
         return False
 
-    def _keepalive_loop(self, task_entry: AlchemicalEntry, stop: threading.Event) -> None:
+    def _keepalive_loop(
+        self, task_entry: AlchemicalEntry, stop: threading.Event
+    ) -> None:
         assert self.keepalive_every is not None
         assert task_entry.claim_token is not None
         while not stop.wait(self.keepalive_every.total_seconds()):
@@ -261,7 +264,7 @@ class QueuedTask(Generic[RValue]):
         entry_id (int): The id of the entry into the queue that contains the task description.
     """
 
-    def __init__(self, queue: AlchemicalQueue, entry_id: int, name: str):
+    def __init__(self, queue: AlchemicalTaskQueue, entry_id: int, name: str):
         self._queue = queue
         self.entry_id = entry_id
         self._name = name
@@ -326,7 +329,7 @@ class Task(Generic[Param, RValue]):
 
     def schedule(
         self,
-        on_queue: AlchemicalQueue,
+        on_queue: AlchemicalTaskQueue,
         *,
         schedule_at: Union[datetime, None] = None,
         priority: int = 0,
@@ -336,7 +339,7 @@ class Task(Generic[Param, RValue]):
         """Schedule a task on a queue to be executed.
 
         Args:
-            on_queue (AlchemicalQueue): the queue used as task queue.
+            on_queue (AlchemicalTaskQueue): the queue used as task queue.
                                         You are expected to run a worker connected to this queue.
             schedule_at (datetime, optional): do not run the task before this time.
             priority (int, optional): the task priority, using normal priority queue semantics.
@@ -371,7 +374,7 @@ class Tasker(Generic[Param, RValue]):
     ) -> Task[Param, RValue]:
         return Task(self._handler, *args, **kwargs)
 
-    def retrieve(self, queue: AlchemicalQueue, entry_id: int) -> QueuedTask[RValue]:
+    def retrieve(self, queue: AlchemicalTaskQueue, entry_id: int) -> QueuedTask[RValue]:
         """Retrieve an instance of this task that is already running."""
 
         name = f"{self._handler.__module__}.{self._handler.__qualname__}"
@@ -383,7 +386,7 @@ class Tasker(Generic[Param, RValue]):
 
 
 def task(
-    function: Callable[Concatenate[TaskInfo, Param], RValue]
+    function: Callable[Concatenate[TaskInfo, Param], RValue],
 ) -> Tasker[Param, RValue]:
     """Decorator to turn a function into a runnable task.
 

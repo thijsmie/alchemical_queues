@@ -75,7 +75,7 @@ todo = add_numbers(2, 3)
 
 # Obtain a task queue
 queues = AlchemicalQueues(engine)
-queue = queues.get("task-queue")
+queue = queues.get_task_queue("task-queue")
 
 # Schedule the todo action on the queue
 task = todo.schedule(queue)

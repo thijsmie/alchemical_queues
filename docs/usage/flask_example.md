@@ -39,14 +39,14 @@ with app.app_context():
 
 @app.route("/<int:a>/<int:b>")
 def add_some_numbers(a: int, b: int):
-    task_queue = queues.get("task-queue")
+    task_queue = queues.get_task_queue("task-queue")
     entry = add_numbers(a, b).schedule(task_queue)
     return f"task: {entry.entry_id}"
 
 
 @app.route("/result/<int:entry>")
 def result(entry: int):
-    task_queue = queues.get("task-queue")
+    task_queue = queues.get_task_queue("task-queue")
     task = add_numbers.retrieve(task_queue, entry)
 
     if not task.done:

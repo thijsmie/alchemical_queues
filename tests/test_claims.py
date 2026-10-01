@@ -9,7 +9,7 @@ from alchemical_queues import AlchemicalQueues, ClaimExpired
 
 
 def test_get_claims_does_not_delete(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
 
     entry = q.get()
@@ -23,13 +23,13 @@ def test_get_claims_does_not_delete(queue: AlchemicalQueues):
 
 
 def test_put_entries_have_no_claim_token(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     entry = q.put(1)
     assert entry.claim_token is None
 
 
 def test_release_frees_a_claimed_entry_for_immediate_reclaim(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put("important")
 
     entry = q.get()
@@ -49,7 +49,7 @@ def test_release_frees_a_claimed_entry_for_immediate_reclaim(queue: AlchemicalQu
 
 
 def test_release_with_wrong_claim_token_raises(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
     entry = q.get()
     assert entry is not None
@@ -63,13 +63,13 @@ def test_release_with_wrong_claim_token_raises(queue: AlchemicalQueues):
 
 
 def test_release_on_unclaimed_entry_raises(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     with pytest.raises(ClaimExpired):
         q.release(12345, 999)
 
 
 def test_discard_removes_a_claimed_entry_entirely(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
 
     entry = q.get()
@@ -82,7 +82,7 @@ def test_discard_removes_a_claimed_entry_entirely(queue: AlchemicalQueues):
 
 
 def test_discard_with_wrong_claim_token_raises(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
     entry = q.get()
     assert entry is not None
@@ -94,14 +94,14 @@ def test_discard_with_wrong_claim_token_raises(queue: AlchemicalQueues):
 
 
 def test_discard_on_unclaimed_entry_raises(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     with pytest.raises(ClaimExpired):
         q.discard(12345, 999)
 
 
 def test_respond_does_not_touch_the_entry(queue: AlchemicalQueues):
     # respond() only files a response; it's unaware of claims entirely.
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
     q.put(1)
 
     entry = q.get()
@@ -118,7 +118,7 @@ def test_respond_does_not_touch_the_entry(queue: AlchemicalQueues):
 def test_redelivery_after_visibility_timeout(queue_factory):
     # Needs its own queue instance so we control visibility_timeout.
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("test", visibility_timeout=timedelta(milliseconds=50))
+    q = aq.get_task_queue("test", visibility_timeout=timedelta(milliseconds=50))
 
     q.put("do not lose me")
     first = q.get()
@@ -141,7 +141,7 @@ def test_redelivery_after_visibility_timeout(queue_factory):
 
 
 def test_get_accepts_a_per_call_visibility_timeout_override(queue: AlchemicalQueues):
-    q = queue.get("test")  # default (long) visibility_timeout
+    q = queue.get_task_queue("test")  # default (long) visibility_timeout
     q.put(1)
 
     entry = q.get(visibility_timeout=timedelta(milliseconds=50))
@@ -156,7 +156,7 @@ def test_get_accepts_a_per_call_visibility_timeout_override(queue: AlchemicalQue
 
 def test_extend_keeps_a_claim_alive_past_its_original_timeout(queue_factory):
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("test", visibility_timeout=timedelta(milliseconds=80))
+    q = aq.get_task_queue("test", visibility_timeout=timedelta(milliseconds=80))
 
     q.put("slow task")
     entry = q.get()
@@ -176,7 +176,7 @@ def test_extend_keeps_a_claim_alive_past_its_original_timeout(queue_factory):
 
 def test_extend_on_an_expired_claim_raises(queue_factory):
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("test", visibility_timeout=timedelta(milliseconds=30))
+    q = aq.get_task_queue("test", visibility_timeout=timedelta(milliseconds=30))
 
     q.put(1)
     entry = q.get()
@@ -199,7 +199,7 @@ def test_extend_past_its_own_timeout_self_heals_if_nobody_else_claimed_it(
     # meantime -- there's no reason to fail it just because the clock ran out
     # a moment before the call landed.
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("test", visibility_timeout=timedelta(milliseconds=30))
+    q = aq.get_task_queue("test", visibility_timeout=timedelta(milliseconds=30))
 
     q.put(1)
     entry = q.get()
@@ -214,7 +214,7 @@ def test_extend_past_its_own_timeout_self_heals_if_nobody_else_claimed_it(
 
 def test_extend_accepts_a_custom_duration(queue_factory):
     aq: AlchemicalQueues = queue_factory()
-    q = aq.get("test", visibility_timeout=timedelta(milliseconds=30))
+    q = aq.get_task_queue("test", visibility_timeout=timedelta(milliseconds=30))
 
     q.put(1)
     entry = q.get()

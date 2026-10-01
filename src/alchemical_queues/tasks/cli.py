@@ -95,5 +95,5 @@ def cli():
     queues = _resolve_queues(namespace)
 
     queues.create_all()
-    queue = queues.get(namespace.queue_name)
+    queue = queues.get_task_queue(namespace.queue_name)
     Worker(queue, timedelta(seconds=namespace.poll_every)).work()

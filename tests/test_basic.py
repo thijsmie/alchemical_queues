@@ -34,7 +34,7 @@ def test_no_uninitialized():
     aq = AlchemicalQueues()
 
     with pytest.raises(Exception):
-        q = aq.get('test')
+        q = aq.get("test")
 
 
 def test_queue_name(queue: AlchemicalQueues):
@@ -54,12 +54,12 @@ def test_put_get_data(queue: AlchemicalQueues):
 
 def test_put_get_data_typed(queue: AlchemicalQueues):
     q = queue.get_typed("test", dict)
-    q.put({'1': 1})
+    q.put({"1": 1})
     job = q.get()
 
     assert job
     assert repr(job)
-    assert job.data['1'] == 1
+    assert job.data["1"] == 1
 
 
 def test_put_get_data_ordered(queue: AlchemicalQueues):
@@ -95,9 +95,9 @@ def test_multi_instance(queue: AlchemicalQueues):
 
 def test_get_dictionary(queue: AlchemicalQueues):
     q = queue.get("test")
-    q.put({'foo': 'bar'})
+    q.put({"foo": "bar"})
     job = q.get()
-    assert job and job.data == {'foo': 'bar'}
+    assert job and job.data == {"foo": "bar"}
 
 
 def test_put_get_clear(queue: AlchemicalQueues):
@@ -114,7 +114,7 @@ def test_put_get_clear(queue: AlchemicalQueues):
 
 
 def test_type_errors(queue: AlchemicalQueues):
-    q = queue.get("test")
+    q = queue.get_task_queue("test")
 
     with pytest.raises(TypeError):
         q.respond("a", "b")
@@ -137,15 +137,8 @@ def test_queue_size_empty(queue: AlchemicalQueues):
     entry = q.get()
     assert entry is not None
 
-    # get() claims an entry, it doesn't remove it -- a claimed-but-not-yet
-    # -discarded entry is still outstanding work, so it still counts.
-    assert not q.empty()
-    assert q.qsize() == 1
-
-    # release() would put it back in the queue (still outstanding); discard()
-    # removes it entirely.
-    q.discard(entry.entry_id, entry.claim_token)
-
+    # the simple queue's get() removes the entry outright, unlike the task
+    # queue's claim-then-discard semantics.
     assert q.empty()
     assert q.qsize() == 0
 

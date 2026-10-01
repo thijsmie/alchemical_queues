@@ -3,6 +3,7 @@
 from .main import (
     AlchemicalQueues,
     AlchemicalQueue,
+    AlchemicalTaskQueue,
     AlchemicalEntry,
     AlchemicalResponse,
     ClaimExpired,
@@ -15,6 +16,7 @@ __version__ = "0.1.0"
 __all__ = [
     "AlchemicalQueues",
     "AlchemicalQueue",
+    "AlchemicalTaskQueue",
     "AlchemicalEntry",
     "AlchemicalResponse",
     "ClaimExpired",

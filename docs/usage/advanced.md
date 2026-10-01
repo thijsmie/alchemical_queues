@@ -20,7 +20,8 @@ print(queue.get().data)  # prints 0
 This argument also applies to the `schedule` method for tasks.
 
 ```python
-add_numbers(1,2).schedule(queue, priority=12)
+task_queue = queues.get_task_queue("task-queue")
+add_numbers(1,2).schedule(task_queue, priority=12)
 ```
 
 
@@ -46,12 +47,13 @@ print(queue.get().data)  # will print 42
 This argument also applies to the `schedule` method for tasks.
 
 ```python
-add_numbers(1,2).schedule(queue, schedule_at=now+timedelta(seconds=30))
+task_queue = queues.get_task_queue("task-queue")
+add_numbers(1,2).schedule(task_queue, schedule_at=now+timedelta(seconds=30))
 ```
 
 ## Custom tables
 
-If you don't want to use the default `AlchemicalQueue` and `AlchemicalResponse` tables you can configure them.
+If you don't want to use the default queue and response tables you can configure them.
 
 ```python
 queues = AlchemicalQueues(
@@ -82,7 +84,7 @@ Or run it via Python yourself, same as with the default tables:
 ```python
 from alchemical_queues.tasks import Worker
 
-Worker(queues.get("task-queue")).work()
+Worker(queues.get_task_queue("task-queue")).work()
 ```
 
 ## Sharing a declarative base
