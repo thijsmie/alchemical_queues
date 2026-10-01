@@ -19,11 +19,10 @@ packages = ["src/alchemical_queues"]
 
 [dependency-groups]
 dev = [
-    "black>=22",
+    "ruff>=0.6",
     "pytest>=7",
     "pytest-cov>=4.0.0",
     "mypy",
-    "pylint>=2",
     "anybadge",
     "mkdocs-macros-plugin>=0.7.0",
     "mkdocs>=1.4",
@@ -55,8 +54,14 @@ warn_return_any = true
 disallow_untyped_defs = true
 warn_unreachable = true
 
-[tool.pylint.'MESSAGES CONTROL']
-disable = ["R0903", "C0301"]
+[tool.ruff]
+target-version = "py37"
+line-length = 88
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E501"]
 
 [build-system]
 requires = ["hatchling"]

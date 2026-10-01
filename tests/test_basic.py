@@ -1,7 +1,7 @@
-from datetime import datetime
 import pytest
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from alchemical_queues import AlchemicalQueue, AlchemicalQueues
+
+from alchemical_queues import AlchemicalQueues
 
 
 def test_create_queue(engine):
@@ -18,7 +18,7 @@ def test_create_queue_late_init(engine):
 def test_no_multiset(engine):
     aq = AlchemicalQueues(engine=engine)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         aq.set_engine(engine)
 
 
@@ -26,15 +26,15 @@ def test_no_multiset_2(engine):
     aq = AlchemicalQueues()
     aq.set_engine(engine)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         aq.set_engine(engine)
 
 
 def test_no_uninitialized():
     aq = AlchemicalQueues()
 
-    with pytest.raises(Exception):
-        q = aq.get("test")
+    with pytest.raises(Exception):  # noqa: B017
+        aq.get("test")
 
 
 def test_queue_name(queue: AlchemicalQueues):

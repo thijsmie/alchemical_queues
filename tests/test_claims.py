@@ -4,7 +4,9 @@ corrupting a later one."""
 
 import time
 from datetime import timedelta
+
 import pytest
+
 from alchemical_queues import AlchemicalQueues, ClaimExpired
 
 

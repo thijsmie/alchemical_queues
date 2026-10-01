@@ -1,5 +1,6 @@
 import time
-from alchemical_queues.tasks import task, TaskInfo
+
+from alchemical_queues.tasks import TaskInfo, task
 
 
 @task

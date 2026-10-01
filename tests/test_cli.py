@@ -1,8 +1,9 @@
 """Tests for the alchemical_worker CLI's --import mode."""
 
 import pytest
+
 from alchemical_queues import AlchemicalQueues
-from alchemical_queues.tasks.cli import cli, _import_queues
+from alchemical_queues.tasks.cli import _import_queues, cli
 
 
 def test_cli_rejects_both_engine_and_import(monkeypatch):

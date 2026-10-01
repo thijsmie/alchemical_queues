@@ -1,11 +1,11 @@
-from datetime import datetime, timedelta
-import time
 import signal
 import time
+from datetime import timedelta
 from threading import Thread
+
 from alchemical_queues import AlchemicalQueues, AlchemicalTaskQueue, tasks
 
-from .mocktasks import increment, fail_once, fail_always, returns_none
+from .mocktasks import fail_always, fail_once, increment, returns_none
 
 
 def handler(signum, stack):
