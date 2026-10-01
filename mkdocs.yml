@@ -15,6 +15,7 @@ nav:
   - Examples:
     - "examples/index.md"
     - "examples/plain_python.md"
+    - "examples/async_plain_python.md"
     - "examples/fastapi.md"
     - "examples/flask.md"
     - "examples/starlette.md"
@@ -42,6 +43,15 @@ nav:
       - "api/tasks/TaskInfo.md"
       - "api/tasks/TaskException.md"
       - "api/tasks/TaskResultSerializer.md"
+    - Async core:
+      - "api/asyncio/AsyncAlchemicalQueues.md"
+      - "api/asyncio/AsyncAlchemicalQueue.md"
+      - "api/asyncio/AsyncAlchemicalTaskQueue.md"
+    - Async tasks:
+      - async_task: "api/tasks_asyncio/async_task.md"
+      - "api/tasks_asyncio/AsyncWorker.md"
+      - "api/tasks_asyncio/AsyncTask.md"
+      - "api/tasks_asyncio/AsyncQueuedTask.md"
 
 theme:
   name: material

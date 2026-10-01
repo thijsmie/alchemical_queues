@@ -3,25 +3,30 @@ from another, with the task's result serialized as a pydantic model via
 [`TaskResultSerializer`][alchemical_queues.tasks.TaskResultSerializer] +
 [`PydanticSerializer`][alchemical_queues.PydanticSerializer].
 
-For this mini example the worker runs in a background thread started from
-FastAPI's lifespan, so `uvicorn app:app` alone is enough to see it work end
-to end. In a real deployment you would instead run `alchemical_worker` as
-its own process (see the plain_python example) so it can be scaled
-independently of the web app.
+Built on [`AsyncAlchemicalQueues`][alchemical_queues.asyncio.AsyncAlchemicalQueues]
+/ [`AsyncWorker`][alchemical_queues.tasks.asyncio.AsyncWorker]: the worker
+runs as a plain `asyncio` task on FastAPI's own event loop, started from the
+lifespan, so `uvicorn app:app` alone is enough to see it work end to end --
+no background thread needed, unlike the sync queue classes. In a real
+deployment you would instead run the worker as its own process (see the
+async_plain_python example) so it can be scaled independently of the web app.
 """
 
+import asyncio
 import os
-import threading
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Union
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from alchemical_queues import AlchemicalQueues, PydanticSerializer
-from alchemical_queues.tasks import TaskInfo, TaskResultSerializer, Worker, task
+from alchemical_queues import PydanticSerializer
+from alchemical_queues.asyncio import AsyncAlchemicalQueues
+from alchemical_queues.tasks import TaskResultSerializer
+from alchemical_queues.tasks.asyncio import AsyncWorker, async_task
+from alchemical_queues.tasks.main import TaskInfo
 
 
 class AddRequest(BaseModel):
@@ -33,18 +38,17 @@ class AddResult(BaseModel):
     sum: int
 
 
-@task
-def add_numbers(taskinfo: TaskInfo, a: int, b: int) -> AddResult:
+@async_task
+async def add_numbers(taskinfo: TaskInfo, a: int, b: int) -> AddResult:
     return AddResult(sum=a + b)
 
 
 def create_app(database_url: Union[str, None] = None) -> FastAPI:
     database_url = database_url or os.environ.get(
-        "DATABASE_URL", "sqlite:///fastapi_example.db"
+        "DATABASE_URL", "sqlite+aiosqlite:///fastapi_example.db"
     )
-    engine = create_engine(database_url)
-    queues = AlchemicalQueues(engine)
-    queues.create_all()
+    engine = create_async_engine(database_url)
+    queues = AsyncAlchemicalQueues(engine)
 
     task_queue = queues.get_task_queue(
         "add-queue",
@@ -53,26 +57,30 @@ def create_app(database_url: Union[str, None] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        worker = Worker(task_queue, poll_every=timedelta(milliseconds=100))
-        # Worker.work() runs forever; a daemon thread is enough for this
-        # example since it is killed when the process exits anyway.
-        threading.Thread(target=worker.work, daemon=True).start()
-        yield
+        await queues.create_all()
+        worker = AsyncWorker(task_queue, poll_every=timedelta(milliseconds=100))
+        # AsyncWorker.work() runs forever; this task shares the app's own
+        # event loop and is cancelled on shutdown rather than left to leak.
+        worker_task = asyncio.create_task(worker.work())
+        try:
+            yield
+        finally:
+            worker_task.cancel()
 
-    app = FastAPI(title="Alchemical Queues - FastAPI example", lifespan=lifespan)
+    app = FastAPI(title="Alchemical Queues - async FastAPI example", lifespan=lifespan)
 
     @app.post("/add")
-    def schedule_add(req: AddRequest) -> dict:
-        entry = add_numbers(req.a, req.b).schedule(task_queue)
+    async def schedule_add(req: AddRequest) -> dict:
+        entry = await add_numbers(req.a, req.b).schedule(task_queue)
         return {"task_id": entry.entry_id}
 
     @app.get("/result/{task_id}")
-    def get_result(task_id: int) -> dict:
+    async def get_result(task_id: int) -> dict:
         queued = add_numbers.retrieve(task_queue, task_id)
-        if not queued.done:
+        if not await queued.done():
             return {"status": "pending"}
 
-        result = queued.result
+        result = await queued.result()
         if isinstance(result, AddResult):
             return {"status": "done", "sum": result.sum}
         return {"status": "error", "error": str(result)}
