@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Serializer`: a pluggable way to control how queue entries and task responses are turned into bytes for storage and back, instead of always using `pickle`. Pass an instance via the new `serializer=` argument of `AlchemicalQueues.get()`/`get_typed()`/`get_task_queue()`/`get_task_queue_typed()`. **Why**: pickle is fine as a default (it's what every previous version always used, unchanged), but some applications want a human-readable/interoperable wire format, or schema validation on what goes through the queue.
+- `PickleSerializer`: the existing `pickle`-based behavior, now explicit and still the default everywhere a `serializer=` isn't passed.
+- `JsonSerializer`: serializes with the standard library `json` module.
+- `PydanticSerializer`: serializes a single [pydantic](https://docs.pydantic.dev/) model type to/from JSON, given the model class. Requires the new optional `pydantic` extra (`pip install alchemical_queues[pydantic]`) -- `pydantic` is never a hard dependency.
+- `AlchemicalQueues.get_serialized()`/`get_task_queue_serialized()`: like `get_typed()`/`get_task_queue_typed()`, but infer the queue's type `T` from the `Serializer[T]` you pass instead of a separate `typeof` argument -- e.g. `queues.get_serialized("q", PydanticSerializer(MyModel))` gives you an `AlchemicalQueue[MyModel]`, with `entry.data` type-checked as `MyModel`, without repeating the type.
+
 ## Version 0.2.0
 
 ### Changed

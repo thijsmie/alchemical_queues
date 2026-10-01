@@ -23,6 +23,10 @@ nav:
       - "api/core/AlchemicalEntry.md"
       - "api/core/AlchemicalResponse.md"
       - "api/core/ClaimExpired.md"
+      - "api/core/Serializer.md"
+      - "api/core/PickleSerializer.md"
+      - "api/core/JsonSerializer.md"
+      - "api/core/PydanticSerializer.md"
     - Tasks:
       - task: "api/tasks/task.md"
       - "api/tasks/Worker.md"

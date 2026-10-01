@@ -102,3 +102,37 @@ queues.create_all()  # also creates any other tables defined on Base
 ```
 
 This is useful when another part of your application already manages migrations or table creation for `Base.metadata`, and you want *Alchemical Queues*'s tables to be created and managed the same way. As above, run `alchemical_worker --import myapp.queues:queues task-queue` against it rather than the plain engine-URL form.
+
+## Serializers
+
+By default, queue entries (and task responses) are serialized with `pickle`, same as always. If you want a different wire format, pass a `Serializer` instance via the `serializer=` argument of `get()`/`get_task_queue()` and friends:
+
+```python
+from alchemical_queues.serializers import JsonSerializer
+
+queue = queues.get("json-queue", serializer=JsonSerializer())
+queue.put({"a": 1})
+```
+
+`JsonSerializer` requires the data to be JSON-serializable. For typed, schema-validated payloads, use `PydanticSerializer` with a [pydantic](https://docs.pydantic.dev/) model (requires the `pydantic` extra: `pip install alchemical_queues[pydantic]`):
+
+```python
+from pydantic import BaseModel
+from alchemical_queues.serializers import PydanticSerializer
+
+class Job(BaseModel):
+    user_id: int
+    payload: str
+
+# get_serialized() infers the queue's type from the serializer, so
+# entry.data below is typed as Job, no typeof= needed.
+queue = queues.get_serialized("job-queue", PydanticSerializer(Job))
+queue.put(Job(user_id=1, payload="hello"))
+
+entry = queue.get()
+print(entry.data.user_id)  # type-checked as int
+```
+
+The same `serializer=`/`get_serialized()` pair is available on `get_task_queue()`/`get_task_queue_serialized()`. A queue's serializer also governs `respond()`/`responses()`, so a non-pickle serializer must be able to handle whatever shape you pass to `respond()` too.
+
+Write your own by subclassing `Serializer[T]` with `dumps(self, obj: T) -> bytes` and `loads(self, data: bytes) -> T`.

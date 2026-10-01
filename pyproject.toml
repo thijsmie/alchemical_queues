@@ -11,6 +11,9 @@ dependencies = [
     "typing_extensions",
 ]
 
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+
 [project.scripts]
 alchemical_worker = "alchemical_queues.tasks.cli:cli"
 
@@ -23,6 +26,7 @@ dev = [
     "pytest>=7",
     "pytest-cov>=4.0.0",
     "mypy",
+    "pydantic>=2",
     "anybadge",
     "mkdocs-macros-plugin>=0.7.0",
     "mkdocs>=1.4",

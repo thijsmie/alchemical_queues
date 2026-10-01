@@ -9,6 +9,12 @@ from .main import (
     AlchemicalTaskQueue,
     ClaimExpired,
 )
+from .serializers import (
+    JsonSerializer,
+    PickleSerializer,
+    PydanticSerializer,
+    Serializer,
+)
 
 __title__ = "Alchemical Queues"
 __author__ = "Thijs Miedema"
@@ -20,5 +26,9 @@ __all__ = [
     "AlchemicalEntry",
     "AlchemicalResponse",
     "ClaimExpired",
+    "Serializer",
+    "PickleSerializer",
+    "JsonSerializer",
+    "PydanticSerializer",
     "tasks",
 ]
