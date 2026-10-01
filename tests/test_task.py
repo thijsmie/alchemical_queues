@@ -46,6 +46,26 @@ def test_task_done_distinguishes_none_result_from_not_done(queue: AlchemicalQueu
     assert v.result is None  # done, legitimately returned None
 
 
+def test_task_result_tolerates_a_respond_call_outside_the_worker_shape(
+    queue: AlchemicalQueues,
+):
+    # respond() is a general queue-level API independent of tasks.Worker --
+    # it accepts any pickle-able data, not just the {"result": ...}/
+    # {"error": ...} shape Worker itself responds with. QueuedTask.result
+    # should hand back whatever was recorded, not blow up trying to
+    # interpret it as Worker's shape.
+    q = queue.get_task_queue("tasks")
+
+    v = increment(12).schedule(q)
+    entry = q.get()
+    assert entry is not None
+
+    q.respond(entry.entry_id, "a plain string, not the Worker dict shape")
+
+    assert v.done is True
+    assert v.result == "a plain string, not the Worker dict shape"
+
+
 def test_task_retry(queue: AlchemicalQueues):
     q = queue.get_task_queue("tasks")
 

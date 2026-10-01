@@ -292,8 +292,19 @@ class QueuedTask(Generic[RValue]):
         an exception if the task failed to run, or None if the task
         has not completed.
 
+        This reads whatever was last recorded with
+        [AlchemicalTaskQueue.respond][alchemical_queues.AlchemicalTaskQueue.respond]
+        for this task's entry_id. `tasks.Worker` always records
+        `{"result": ...}` on success or `{"error": ..., "error_type": ...}`
+        on failure, which is what lets this property tell those two apart.
+        If you call `respond()` yourself with something else entirely (it's
+        a general queue-level API, not Worker-specific), there's no such
+        shape to interpret -- you get that data back as-is, same as `RValue`.
+
         Returns:
-            RValue: the value you return from the task handler.
+            RValue: the value you return from the task handler (or, verbatim,
+                whatever was passed to `respond()` if it wasn't a dict with a
+                `result`/`error` key).
             TaskException: the task failed to execute.
             None: the task has not completed -- but also what you get if the
                 task completed successfully and returned None itself; see `done`.
@@ -304,8 +315,10 @@ class QueuedTask(Generic[RValue]):
         if not responses:
             return None
 
-        response = responses[0]
-        data: dict = cast(dict, response.data)
+        data = responses[0].data
+
+        if not isinstance(data, dict):
+            return cast(RValue, data)
 
         if "error" in data:
             return TaskException(data["error"], data.get("error_type"))

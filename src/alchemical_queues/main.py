@@ -776,6 +776,13 @@ class AlchemicalTaskQueue(Generic[T]):
         [discard][alchemical_queues.AlchemicalTaskQueue.discard] separately once
         you've responded, to free up the entry you claimed.
 
+        If this entry_id belongs to a `tasks.task`-scheduled task, note that
+        [QueuedTask.result][alchemical_queues.tasks.QueuedTask.result] only
+        recognizes the `{"result": ...}`/`{"error": ..., "error_type": ...}`
+        shape `tasks.Worker` itself responds with to tell success from
+        failure -- call `respond()` directly (as here) with anything else
+        and `QueuedTask.result` just hands that value back to you unparsed.
+
         Args:
             entry_id (int): The entry_id you wish to respond to.
             response (Any): The response data. Must be pickable.
