@@ -1,8 +1,20 @@
 """Implementation of Alchemical Queues"""
 
+import functools
 import secrets
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, Generic, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from sqlalchemy import (
     BigInteger,
@@ -18,6 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .serializers import PickleSerializer, Serializer
@@ -56,6 +69,34 @@ def _datetime_column() -> DateTime:
     return DateTime(timezone=True).with_variant(
         mysql.DATETIME(fsp=6), "mysql", "mariadb"
     )
+
+
+_MAX_DEADLOCK_RETRIES = 3
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    # MySQL/MariaDB's InnoDB detects a deadlock between two transactions and
+    # picks one to roll back entirely with error 1213, which SQLAlchemy
+    # surfaces as a plain OperationalError -- there's no portable DBAPI
+    # exception class to catch, so this matches on the message instead. The
+    # rolled-back transaction never committed anything, so retrying the
+    # whole call from scratch is always safe. A no-op on every other
+    # backend, which never raises this message.
+    return "deadlock found" in str(exc).lower()
+
+
+def _retry_on_deadlock(fn: _F) -> _F:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        for attempt in range(_MAX_DEADLOCK_RETRIES):
+            try:
+                return fn(*args, **kwargs)
+            except OperationalError as exc:
+                if attempt == _MAX_DEADLOCK_RETRIES - 1 or not _is_deadlock(exc):
+                    raise
+
+    return cast(_F, wrapper)
 
 
 def _new_claim_token() -> int:
@@ -214,6 +255,7 @@ class AlchemicalQueues:
 
         self._base.metadata.create_all(self._engine)
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from all queues and task results. Might fail-silent an update call."""
 
@@ -470,6 +512,7 @@ class AlchemicalQueue(Generic[T]):
         """The name of the queue"""
         return self._name
 
+    @_retry_on_deadlock
     def put(
         self,
         item: T,
@@ -505,6 +548,7 @@ class AlchemicalQueue(Generic[T]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     def get(self) -> Union["AlchemicalEntry[T]", None]:
         """Get the highest priority entry out from the queue, removing it.
 
@@ -593,6 +637,7 @@ class AlchemicalQueue(Generic[T]):
                 is None
             )
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
 
@@ -657,6 +702,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         """The default visibility_timeout this queue's `get()` calls use."""
         return self._visibility_timeout
 
+    @_retry_on_deadlock
     def put(
         self,
         item: T,
@@ -692,6 +738,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     def get(
         self, *, visibility_timeout: Union[timedelta, None] = None
     ) -> Union["AlchemicalEntry[T]", None]:
@@ -791,6 +838,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
         return entry
 
+    @_retry_on_deadlock
     def release(self, entry_id: int, claim_token: int) -> None:
         """Release a claimed entry back to the queue, without recording a
         response for it. The entry itself is kept -- it becomes claimable
@@ -830,6 +878,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     def discard(self, entry_id: int, claim_token: int) -> None:
         """Remove a claimed entry from the queue entirely, without recording
         a response for it. Unlike [release][alchemical_queues.AlchemicalTaskQueue.release],
@@ -861,6 +910,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     def extend(
         self,
         entry_id: int,
@@ -942,6 +992,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
                 is None
             )
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
 
@@ -951,6 +1002,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
             )
             session.commit()
 
+    @_retry_on_deadlock
     def respond(
         self, entry_id: int, response: R, cleanup_at: Union[datetime, None] = None
     ) -> "AlchemicalResponse[R]":
