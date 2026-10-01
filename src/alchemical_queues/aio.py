@@ -25,6 +25,7 @@ from .main import (
     ClaimExpired,
     _generate_models,
     _new_claim_token,
+    _supports_returning,
 )
 from .serializers import PickleSerializer, Serializer
 
@@ -313,8 +314,8 @@ class AsyncAlchemicalQueue(Generic[T]):
         timestamp = datetime.now()
 
         async with self._session() as session:
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -327,15 +328,25 @@ class AsyncAlchemicalQueue(Generic[T]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = (
-                await session.execute(
-                    delete(self._model)
-                    .where(self._model.entry_id == candidate.scalar_subquery())
-                    .returning(self._model)
-                )
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "delete"):
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = (
+                    await session.execute(
+                        delete(self._model)
+                        .where(self._model.entry_id == candidate.scalar_subquery())
+                        .returning(self._model)
+                    )
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all: lock and fetch the
+                # full candidate row first instead, then delete it by id in
+                # the same transaction. The row stays locked throughout, so
+                # the same atomicity guarantee holds.
+                item = (await session.execute(query)).scalar_one_or_none()
+                if item is not None:
+                    await session.delete(item)
 
             if item is None:
                 await session.rollback()
@@ -466,8 +477,8 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
         token = _new_claim_token()
 
         async with self._session() as session:
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -484,16 +495,29 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = (
-                await session.execute(
-                    update(self._model)
-                    .where(self._model.entry_id == candidate.scalar_subquery())
-                    .values(claimed_until=timestamp + timeout, claim_token=token)
-                    .returning(self._model)
-                )
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "update"):
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = (
+                    await session.execute(
+                        update(self._model)
+                        .where(self._model.entry_id == candidate.scalar_subquery())
+                        .values(claimed_until=timestamp + timeout, claim_token=token)
+                        .returning(self._model)
+                    )
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all, and MariaDB only
+                # supports it for DELETE/INSERT, not UPDATE: lock and fetch
+                # the full candidate row first instead, set the claim fields
+                # on the already-loaded instance, and let the session flush
+                # that as a plain UPDATE on commit. The row stays locked
+                # throughout, so the same atomicity guarantee holds.
+                item = (await session.execute(query)).scalar_one_or_none()
+                if item is not None:
+                    item.claimed_until = timestamp + timeout
+                    item.claim_token = token
 
             if item is None:
                 await session.rollback()

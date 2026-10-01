@@ -23,6 +23,7 @@ nav:
   - Development:
     - "development/contributing.md"
     - "development/postgres.md"
+    - "development/other-databases.md"
   - API:
     - Core:
       - "api/core/AlchemicalQueues.md"

@@ -2,14 +2,14 @@
 
 import secrets
 from datetime import datetime, timedelta
-from typing import Any, Dict, Generic, List, Type, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, Generic, List, Type, TypeVar, Union, cast
 
 from sqlalchemy import (
     BigInteger,
     DateTime,
     Integer,
     LargeBinary,
-    Text,
+    String,
     delete,
     func,
     or_,
@@ -21,6 +21,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from .serializers import PickleSerializer, Serializer
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
 DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 DEFAULT_SERIALIZER: Serializer[Any] = PickleSerializer()
 
@@ -30,7 +33,16 @@ R = TypeVar("R")
 
 # Dialects whose SELECT ... FOR UPDATE supports SKIP LOCKED, used to make
 # concurrent AlchemicalTaskQueue.get() calls avoid contending on the same rows.
-_SKIP_LOCKED_DIALECTS = frozenset({"postgresql", "mysql", "oracle"})
+_SKIP_LOCKED_DIALECTS = frozenset({"postgresql", "mysql", "mariadb", "oracle"})
+
+
+def _supports_returning(engine: Union[Engine, "AsyncEngine"], kind: str) -> bool:
+    """Whether this engine's dialect supports `<kind> ... RETURNING` (`kind`
+    is "delete" or "update"). This is checked per statement kind rather than
+    assumed from the dialect name: MySQL supports neither, and MariaDB
+    supports `DELETE ... RETURNING` but not `UPDATE ... RETURNING`.
+    """
+    return bool(getattr(engine.dialect, f"{kind}_returning", False))
 
 
 def _new_claim_token() -> int:
@@ -86,7 +98,7 @@ def _generate_models(
         entry_id: Mapped[int] = mapped_column(
             Integer, primary_key=True, nullable=False, autoincrement=True
         )
-        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+        queue_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
         enqueued_at: Mapped[datetime] = mapped_column(
             DateTime(timezone=True), nullable=False
@@ -121,7 +133,7 @@ def _generate_models(
         response_id: Mapped[int] = mapped_column(
             Integer, primary_key=True, nullable=False, autoincrement=True
         )
-        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+        queue_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
         entry_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
 
         delivered_at: Mapped[datetime] = mapped_column(
@@ -490,12 +502,8 @@ class AlchemicalQueue(Generic[T]):
         timestamp = datetime.now()
 
         with self._session() as session:
-            # Picking the candidate row and deleting it happen in one atomic
-            # DELETE ... RETURNING statement, so two concurrent get() calls
-            # can never pop the same entry, with no extra transaction
-            # isolation needed for that guarantee to hold.
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -508,13 +516,27 @@ class AlchemicalQueue(Generic[T]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = session.execute(
-                delete(self._model)
-                .where(self._model.entry_id == candidate.scalar_subquery())
-                .returning(self._model)
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "delete"):
+                # Picking the candidate row and deleting it happen in one
+                # atomic DELETE ... RETURNING statement, so two concurrent
+                # get() calls can never pop the same entry, with no extra
+                # transaction isolation needed for that guarantee to hold.
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = session.execute(
+                    delete(self._model)
+                    .where(self._model.entry_id == candidate.scalar_subquery())
+                    .returning(self._model)
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all: lock and fetch the
+                # full candidate row first instead, then delete it by id in
+                # the same transaction. The row stays locked throughout, so
+                # the same atomicity guarantee holds.
+                item = session.execute(query).scalar_one_or_none()
+                if item is not None:
+                    session.delete(item)
 
             if item is None:
                 session.rollback()
@@ -700,14 +722,8 @@ class AlchemicalTaskQueue(Generic[T, R]):
         token = _new_claim_token()
 
         with self._session() as session:
-            # Picking the candidate row and claiming it happen in one atomic
-            # UPDATE ... RETURNING statement, so two concurrent get() calls can
-            # never claim the same entry. This needs no special transaction
-            # isolation (previously SQLite needed a global BEGIN EXCLUSIVE,
-            # which serialized every transaction on the engine, including ones
-            # from unrelated code sharing the same engine).
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -724,14 +740,34 @@ class AlchemicalTaskQueue(Generic[T, R]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = session.execute(
-                update(self._model)
-                .where(self._model.entry_id == candidate.scalar_subquery())
-                .values(claimed_until=timestamp + timeout, claim_token=token)
-                .returning(self._model)
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "update"):
+                # Picking the candidate row and claiming it happen in one
+                # atomic UPDATE ... RETURNING statement, so two concurrent
+                # get() calls can never claim the same entry. This needs no
+                # special transaction isolation (previously SQLite needed a
+                # global BEGIN EXCLUSIVE, which serialized every transaction
+                # on the engine, including ones from unrelated code sharing
+                # the same engine).
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = session.execute(
+                    update(self._model)
+                    .where(self._model.entry_id == candidate.scalar_subquery())
+                    .values(claimed_until=timestamp + timeout, claim_token=token)
+                    .returning(self._model)
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all, and MariaDB only
+                # supports it for DELETE/INSERT, not UPDATE: lock and fetch
+                # the full candidate row first instead, set the claim fields
+                # on the already-loaded instance, and let the session flush
+                # that as a plain UPDATE on commit. The row stays locked
+                # throughout, so the same atomicity guarantee holds.
+                item = session.execute(query).scalar_one_or_none()
+                if item is not None:
+                    item.claimed_until = timestamp + timeout
+                    item.claim_token = token
 
             if item is None:
                 session.rollback()
