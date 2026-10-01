@@ -9,8 +9,8 @@ they are guaranteed to keep working.
 - [Plain Python](plain_python.md) -- no web framework at all, the same
   producer/worker split as the [tutorial](../usage/tutorial.md).
 - [Async plain Python](async_plain_python.md) -- the same split again, but
-  built on [`AsyncAlchemicalQueues`][alchemical_queues.asyncio.AsyncAlchemicalQueues]
-  / [`AsyncWorker`][alchemical_queues.tasks.asyncio.AsyncWorker] instead of
+  built on [`AsyncAlchemicalQueues`][alchemical_queues.aio.AsyncAlchemicalQueues]
+  / [`AsyncWorker`][alchemical_queues.tasks.aio.AsyncWorker] instead of
   their sync equivalents.
 - [FastAPI](fastapi.md) -- schedules a task per request, result serialized
   as a pydantic model. Also built on `AsyncAlchemicalQueues`/`AsyncWorker`,

@@ -5,15 +5,14 @@ exposes a second endpoint to poll for the result. The result is a pydantic
 model, serialized with
 [`TaskResultSerializer`][alchemical_queues.tasks.TaskResultSerializer] +
 [`PydanticSerializer`][alchemical_queues.PydanticSerializer]. Built on
-[`AsyncAlchemicalQueues`][alchemical_queues.asyncio.AsyncAlchemicalQueues] /
-[`AsyncWorker`][alchemical_queues.tasks.asyncio.AsyncWorker].
+[`AsyncAlchemicalQueues`][alchemical_queues.aio.AsyncAlchemicalQueues] /
+[`AsyncWorker`][alchemical_queues.tasks.aio.AsyncWorker].
 
 ## Run it
 
 ```bash
 cd examples/fastapi_app
-pip install fastapi uvicorn aiosqlite
-uvicorn app:app
+uv run --with fastapi,uvicorn,aiosqlite uvicorn app:app
 ```
 
 Then, in another terminal:

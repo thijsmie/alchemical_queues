@@ -3,8 +3,8 @@ from another, with the task's result serialized as a pydantic model via
 [`TaskResultSerializer`][alchemical_queues.tasks.TaskResultSerializer] +
 [`PydanticSerializer`][alchemical_queues.PydanticSerializer].
 
-Built on [`AsyncAlchemicalQueues`][alchemical_queues.asyncio.AsyncAlchemicalQueues]
-/ [`AsyncWorker`][alchemical_queues.tasks.asyncio.AsyncWorker]: the worker
+Built on [`AsyncAlchemicalQueues`][alchemical_queues.aio.AsyncAlchemicalQueues]
+/ [`AsyncWorker`][alchemical_queues.tasks.aio.AsyncWorker]: the worker
 runs as a plain `asyncio` task on FastAPI's own event loop, started from the
 lifespan, so `uvicorn app:app` alone is enough to see it work end to end --
 no background thread needed, unlike the sync queue classes. In a real
@@ -23,9 +23,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alchemical_queues import PydanticSerializer
-from alchemical_queues.asyncio import AsyncAlchemicalQueues
+from alchemical_queues.aio import AsyncAlchemicalQueues
 from alchemical_queues.tasks import TaskResultSerializer
-from alchemical_queues.tasks.asyncio import AsyncWorker, async_task
+from alchemical_queues.tasks.aio import AsyncWorker, async_task
 from alchemical_queues.tasks.main import TaskInfo
 
 

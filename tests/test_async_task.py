@@ -11,9 +11,9 @@ pytest.importorskip("aiosqlite")
 
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
-from alchemical_queues.asyncio import AsyncAlchemicalQueues  # noqa: E402
+from alchemical_queues.aio import AsyncAlchemicalQueues  # noqa: E402
 from alchemical_queues.tasks import TaskException  # noqa: E402
-from alchemical_queues.tasks.asyncio import AsyncWorker  # noqa: E402
+from alchemical_queues.tasks.aio import AsyncWorker  # noqa: E402
 
 from .mocktasks_async import (  # noqa: E402
     fail_always,
@@ -106,7 +106,7 @@ async def test_task_fail(async_queue: AsyncAlchemicalQueues):
 
 @pytest.mark.asyncio
 async def test_task_namefail(async_queue: AsyncAlchemicalQueues):
-    from alchemical_queues.tasks.asyncio import async_task
+    from alchemical_queues.tasks.aio import async_task
 
     q = async_queue.get_task_queue("tasks")
 

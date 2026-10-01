@@ -248,7 +248,7 @@ class AsyncAlchemicalQueues:
 class AsyncAlchemicalQueue(Generic[T]):
     """Async equivalent of [AlchemicalQueue][alchemical_queues.AlchemicalQueue].
     Not intended to be initialized by a user, go through
-    [AsyncAlchemicalQueues.get][alchemical_queues.asyncio.AsyncAlchemicalQueues.get]
+    [AsyncAlchemicalQueues.get][alchemical_queues.aio.AsyncAlchemicalQueues.get]
     instead.
     """
 
@@ -382,7 +382,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
     """Async equivalent of
     [AlchemicalTaskQueue][alchemical_queues.AlchemicalTaskQueue]. Not
     intended to be initialized by a user, go through
-    [AsyncAlchemicalQueues.get_task_queue][alchemical_queues.asyncio.AsyncAlchemicalQueues.get_task_queue]
+    [AsyncAlchemicalQueues.get_task_queue][alchemical_queues.aio.AsyncAlchemicalQueues.get_task_queue]
     instead.
     """
 

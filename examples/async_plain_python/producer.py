@@ -16,7 +16,7 @@ import os
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from tasks import add_numbers
 
-from alchemical_queues.asyncio import AsyncAlchemicalQueues
+from alchemical_queues.aio import AsyncAlchemicalQueues
 
 
 def build_queues(database_url: str) -> AsyncAlchemicalQueues:

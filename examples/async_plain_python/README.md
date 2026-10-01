@@ -4,30 +4,27 @@ The async equivalent of the
 [`plain_python`](https://github.com/thijsmie/alchemical_queues/tree/main/examples/plain_python)
 example: a task module, a worker script, and a producer script that
 schedules work and awaits the result -- built on
-[`AsyncAlchemicalQueues`][alchemical_queues.asyncio.AsyncAlchemicalQueues] /
-[`AsyncWorker`][alchemical_queues.tasks.asyncio.AsyncWorker] instead of their
+[`AsyncAlchemicalQueues`][alchemical_queues.aio.AsyncAlchemicalQueues] /
+[`AsyncWorker`][alchemical_queues.tasks.aio.AsyncWorker] instead of their
 sync equivalents.
 
 ## Run it
 
-Install an async driver for your database (`aiosqlite` for SQLite, used
-here):
-
 ```bash
 cd examples/async_plain_python
-pip install aiosqlite
 ```
 
-In one terminal, start a worker:
+In one terminal, start a worker (`--with aiosqlite` for the async SQLite
+driver used here):
 
 ```bash
-python worker.py "sqlite+aiosqlite:///example.db"
+uv run --with aiosqlite python worker.py "sqlite+aiosqlite:///example.db"
 ```
 
 In another terminal, schedule a task and await its result:
 
 ```bash
-python producer.py
+uv run --with aiosqlite python producer.py
 ```
 
 You should see the worker print that it is running the task, and the

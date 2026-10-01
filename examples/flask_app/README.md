@@ -8,8 +8,7 @@ exposes a second endpoint to poll for the result, using
 
 ```bash
 cd examples/flask_app
-pip install flask
-flask run
+uv run --with flask flask run
 ```
 
 Then, in another terminal:

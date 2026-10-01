@@ -1,6 +1,6 @@
 """Async equivalents of [tasks.Worker][alchemical_queues.tasks.Worker] and
 the `task`/`Task`/`QueuedTask`/`Tasker` scheduling API, built on
-[AsyncAlchemicalTaskQueue][alchemical_queues.asyncio.AsyncAlchemicalTaskQueue].
+[AsyncAlchemicalTaskQueue][alchemical_queues.aio.AsyncAlchemicalTaskQueue].
 
 `Task.schedule()`/`QueuedTask.result` in `tasks.main` call `queue.put()`/
 `queue.responses()` directly (not awaited), so they can't be reused as-is
@@ -32,7 +32,7 @@ from typing import (
 
 from typing_extensions import Concatenate, ParamSpec
 
-from ..asyncio import AsyncAlchemicalTaskQueue
+from ..aio import AsyncAlchemicalTaskQueue
 from ..main import AlchemicalEntry, ClaimExpired
 from .main import TaskException, TaskInfo
 
@@ -163,7 +163,7 @@ def async_task(
     function: Callable[Concatenate[TaskInfo, Param], Awaitable[RValue]],
 ) -> AsyncTasker[Param, RValue]:
     """Decorator to turn an `async def` function into a runnable task, for
-    use with [AsyncWorker][alchemical_queues.tasks.asyncio.AsyncWorker]. See
+    use with [AsyncWorker][alchemical_queues.tasks.aio.AsyncWorker]. See
     [tasks.task][alchemical_queues.tasks.task] for the sync equivalent.
 
     Args:
@@ -195,7 +195,7 @@ class AsyncWorker:
         Args:
             queue (AsyncAlchemicalTaskQueue): the queue this worker runs on.
                 Obtain one via
-                [AsyncAlchemicalQueues.get_task_queue][alchemical_queues.asyncio.AsyncAlchemicalQueues.get_task_queue].
+                [AsyncAlchemicalQueues.get_task_queue][alchemical_queues.aio.AsyncAlchemicalQueues.get_task_queue].
             poll_every (timedelta, optional): how often to poll for new tasks
                 when the queue is empty.
             keepalive_every (timedelta | None, optional): if set, a background

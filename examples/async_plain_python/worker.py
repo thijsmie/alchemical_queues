@@ -14,8 +14,8 @@ from datetime import timedelta
 from sqlalchemy.ext.asyncio import create_async_engine
 from tasks import add_numbers  # noqa: F401  (registers the handler by import)
 
-from alchemical_queues.asyncio import AsyncAlchemicalQueues
-from alchemical_queues.tasks.asyncio import AsyncWorker
+from alchemical_queues.aio import AsyncAlchemicalQueues
+from alchemical_queues.tasks.aio import AsyncWorker
 
 
 async def main() -> None:

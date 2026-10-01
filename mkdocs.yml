@@ -44,14 +44,14 @@ nav:
       - "api/tasks/TaskException.md"
       - "api/tasks/TaskResultSerializer.md"
     - Async core:
-      - "api/asyncio/AsyncAlchemicalQueues.md"
-      - "api/asyncio/AsyncAlchemicalQueue.md"
-      - "api/asyncio/AsyncAlchemicalTaskQueue.md"
+      - "api/aio/AsyncAlchemicalQueues.md"
+      - "api/aio/AsyncAlchemicalQueue.md"
+      - "api/aio/AsyncAlchemicalTaskQueue.md"
     - Async tasks:
-      - async_task: "api/tasks_asyncio/async_task.md"
-      - "api/tasks_asyncio/AsyncWorker.md"
-      - "api/tasks_asyncio/AsyncTask.md"
-      - "api/tasks_asyncio/AsyncQueuedTask.md"
+      - async_task: "api/tasks_aio/async_task.md"
+      - "api/tasks_aio/AsyncWorker.md"
+      - "api/tasks_aio/AsyncTask.md"
+      - "api/tasks_aio/AsyncQueuedTask.md"
 
 theme:
   name: material

@@ -20,7 +20,7 @@ async def test_async_plain_python_example(tmp_path):
         from producer import build_queues
         from tasks import add_numbers
 
-        from alchemical_queues.tasks.asyncio import AsyncWorker
+        from alchemical_queues.tasks.aio import AsyncWorker
 
         queues = build_queues(f"sqlite+aiosqlite:///{tmp_path / 'async_plain.db'}")
         await queues.create_all()

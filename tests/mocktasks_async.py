@@ -1,6 +1,6 @@
 import asyncio
 
-from alchemical_queues.tasks.asyncio import async_task
+from alchemical_queues.tasks.aio import async_task
 from alchemical_queues.tasks.main import TaskInfo
 
 

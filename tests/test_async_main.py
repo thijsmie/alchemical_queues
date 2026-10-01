@@ -12,7 +12,7 @@ pytest.importorskip("aiosqlite")
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
 from alchemical_queues import ClaimExpired  # noqa: E402
-from alchemical_queues.asyncio import AsyncAlchemicalQueues  # noqa: E402
+from alchemical_queues.aio import AsyncAlchemicalQueues  # noqa: E402
 
 
 @pytest.fixture

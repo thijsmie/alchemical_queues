@@ -177,16 +177,16 @@ handle.result  # a JobResult, or a TaskException on failure -- same as always
 ## Async
 
 Everything above has an async equivalent built on `sqlalchemy.ext.asyncio`'s
-`AsyncEngine`/`AsyncSession`, under `alchemical_queues.asyncio` /
-`alchemical_queues.tasks.asyncio`: `AsyncAlchemicalQueues`,
+`AsyncEngine`/`AsyncSession`, under `alchemical_queues.aio` /
+`alchemical_queues.tasks.aio`: `AsyncAlchemicalQueues`,
 `AsyncAlchemicalQueue`, `AsyncAlchemicalTaskQueue`, `AsyncWorker`, and
 `async_task`/`AsyncTask`/`AsyncQueuedTask`. The API is the same shape as
 the sync classes -- every method that does I/O is just `async def` instead:
 
 ```python
 from sqlalchemy.ext.asyncio import create_async_engine
-from alchemical_queues.asyncio import AsyncAlchemicalQueues
-from alchemical_queues.tasks.asyncio import AsyncWorker, async_task
+from alchemical_queues.aio import AsyncAlchemicalQueues
+from alchemical_queues.tasks.aio import AsyncWorker, async_task
 from alchemical_queues.tasks.main import TaskInfo
 
 engine = create_async_engine("sqlite+aiosqlite:///example.db")
