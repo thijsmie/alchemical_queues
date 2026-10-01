@@ -33,6 +33,15 @@ dev = [
     "mkdocs-material>=8",
     "mike>=1",
     "mkdocstrings[python]>=0.19",
+    {include-group = "examples"},
+]
+examples = [
+    "flask>=3; python_version >= '3.9'",
+    "fastapi>=0.100; python_version >= '3.9'",
+    "starlette>=0.30; python_version >= '3.9'",
+    "litestar>=2; python_version >= '3.9'",
+    "httpx; python_version >= '3.9'",
+    "uvicorn; python_version >= '3.9'",
 ]
 
 [tool.pytest.ini_options]
