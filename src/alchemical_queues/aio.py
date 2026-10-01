@@ -11,6 +11,7 @@ same atomic UPDATE/DELETE ... RETURNING pattern); only `await`/`AsyncSession`
 differ, see `.main` for why each query is shaped the way it is.
 """
 
+import asyncio
 import functools
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Generic, List, Type, TypeVar, Union, cast
@@ -26,6 +27,7 @@ from .main import (
     AlchemicalEntry,
     AlchemicalResponse,
     ClaimExpired,
+    _deadlock_backoff,
     _generate_models,
     _is_deadlock,
     _new_claim_token,
@@ -51,6 +53,7 @@ def _retry_on_deadlock(fn: _F) -> _F:
             except OperationalError as exc:
                 if attempt == _MAX_DEADLOCK_RETRIES - 1 or not _is_deadlock(exc):
                     raise
+                await asyncio.sleep(_deadlock_backoff(attempt))
 
     return cast(_F, wrapper)
 

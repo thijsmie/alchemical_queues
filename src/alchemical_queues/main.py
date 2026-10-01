@@ -1,7 +1,9 @@
 """Implementation of Alchemical Queues"""
 
 import functools
+import random
 import secrets
+import time
 from datetime import datetime, timedelta
 from typing import (
     TYPE_CHECKING,
@@ -71,7 +73,7 @@ def _datetime_column() -> DateTime:
     )
 
 
-_MAX_DEADLOCK_RETRIES = 3
+_MAX_DEADLOCK_RETRIES = 8
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -86,6 +88,15 @@ def _is_deadlock(exc: BaseException) -> bool:
     return "deadlock found" in str(exc).lower()
 
 
+def _deadlock_backoff(attempt: int) -> float:
+    # Retrying immediately after a deadlock tends to collide with the same
+    # concurrent transactions again under heavy write concurrency (several
+    # retrying writers racing back into the same gap-locked range at once)
+    # -- a small, growing random delay spreads retries out so they stop
+    # lockstepping into each other.
+    return random.uniform(0, 0.01 * (2**attempt))
+
+
 def _retry_on_deadlock(fn: _F) -> _F:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -95,6 +106,7 @@ def _retry_on_deadlock(fn: _F) -> _F:
             except OperationalError as exc:
                 if attempt == _MAX_DEADLOCK_RETRIES - 1 or not _is_deadlock(exc):
                     raise
+                time.sleep(_deadlock_backoff(attempt))
 
     return cast(_F, wrapper)
 
