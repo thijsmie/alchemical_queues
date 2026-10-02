@@ -201,25 +201,38 @@ class Beat:
                 session.add(self._model(name=name, next_run=first_due))
             session.commit()
 
-            rows: Dict[str, tuple] = {
+            # The due-check (next_run <= now) is done here, in SQL, rather
+            # than by comparing a next_run value read back into Python
+            # against datetime.now() -- a column declared timezone-aware
+            # (as _datetime_column() does, for MSSQL's benefit) can come
+            # back as a tz-aware datetime depending on the backend/driver,
+            # which can't be compared to a naive Python datetime at all.
+            # Every other schedule_at/claimed_until comparison in this
+            # codebase is likewise done as a SQL WHERE, never read back and
+            # re-compared in Python.
+            due: Dict[str, tuple] = {
                 name: (next_run, version)
                 for name, next_run, version in session.execute(
                     select(
                         self._model.name, self._model.next_run, self._model.version
-                    ).where(self._model.name.in_(self.schedules.keys()))
+                    ).where(
+                        self._model.name.in_(self.schedules.keys()),
+                        self._model.next_run <= now,
+                    )
                 ).all()
             }
 
-            for schedule in self.schedules.values():
-                current_next_run, current_version = rows[schedule.name]
-                if current_next_run > now:
-                    continue
+            for name, (current_next_run, current_version) in due.items():
+                schedule = self.schedules[name]
 
                 # A conditional UPDATE keyed on the version we just read acts
                 # as a compare-and-swap: if another Beat process already
                 # advanced this schedule since our read, this matches zero
                 # rows instead of advancing (and firing) it a second time for
-                # the same grid step.
+                # the same grid step. Adding a timedelta to current_next_run
+                # is safe regardless of its tz-awareness -- unlike comparing
+                # it to another datetime, addition never requires both sides
+                # to agree on that.
                 result = session.execute(
                     update(self._model)
                     .where(
