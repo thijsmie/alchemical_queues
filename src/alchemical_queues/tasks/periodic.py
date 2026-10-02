@@ -11,14 +11,12 @@ double-enqueues a run: advancing a schedule's `next_run` is a conditional
 `UPDATE` keyed on an integer `version` column read moments before (bumped
 on every advance), so only one concurrent transaction can win -- the same
 compare-and-swap `AlchemicalTaskQueue.get()` already relies on to hand each
-entry to exactly one claimant. (The CAS key is `version`, not `next_run`
-itself, specifically to avoid round-tripping a `datetime` through a
-backend's wire format and back as an equality check -- MySQL/MariaDB's
-`DATETIME(6)` doesn't always come back bit-identical to what was sent,
-which silently broke every advance after the first.) Each advance adds one
-`every` to the schedule's own previous `next_run` (never to the current
-time), so run times stay on a fixed grid anchored at `start_at` instead of
-drifting later with each run.
+entry to exactly one claimant. The CAS key is `version`, not `next_run`
+itself, so the check never depends on a `datetime` round-tripping
+bit-identical through a backend's wire format and back. Each advance adds
+one `every` to the schedule's own previous `next_run` (never to the
+current time), so run times stay on a fixed grid anchored at `start_at`
+instead of drifting later with each run.
 
 This is intentionally minimal -- fixed-interval schedules only, no cron
 expression syntax. A cron string could be layered on top later (parsed down
@@ -30,7 +28,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Generic, List, NoReturn, Union
 
-from sqlalchemy import Integer, String, select, update
+from sqlalchemy import Integer, String, delete, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -159,6 +157,15 @@ class Beat:
     def create_all(self) -> None:
         """Create Beat's own schedule table."""
         self._model.metadata.create_all(self._engine)  # type: ignore[attr-defined]
+
+    @_retry_on_deadlock
+    def clear(self) -> None:
+        """Remove every row from Beat's own schedule table (not the task
+        queue itself). The next `tick()` then treats every schedule here as
+        never seen before -- due at its `start_at` (or immediately)."""
+        with self._session() as session:
+            session.execute(delete(self._model))
+            session.commit()
 
     @_retry_on_deadlock
     def tick(self) -> int:

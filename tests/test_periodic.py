@@ -1,12 +1,26 @@
 import time
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy.engine import Engine
 
 from alchemical_queues import AlchemicalQueues
 from alchemical_queues.tasks.periodic import Beat, periodic
 
 from .mocktasks import increment
+
+
+@pytest.fixture(autouse=True)
+def _clear_schedules(engine: Engine, queue: AlchemicalQueues):
+    # `run_around_tests` (conftest.py) clears the core queue/response
+    # tables after each test, but knows nothing about Beat's own schedule
+    # table -- against a real shared database (CI's --engine for
+    # MySQL/MariaDB/MSSQL/Postgres, as opposed to the per-test tmpdir
+    # SQLite file used otherwise), every test in this file reuses the same
+    # schedule names, so a row left behind by one test is still there,
+    # already past its first `every`, when the next test looks it up.
+    yield
+    Beat(engine, queue.get_task_queue("periodic"), []).clear()
 
 
 def test_periodic_first_tick_enqueues_immediately(
