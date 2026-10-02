@@ -20,7 +20,7 @@ changing `Beat` itself.
 
 import time
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Generic, List, NoReturn
+from typing import Callable, Dict, Generic, List, NoReturn, Union
 
 from sqlalchemy import String, select, update
 from sqlalchemy.engine import Engine
@@ -39,11 +39,13 @@ class PeriodicTask(Generic[Param, RValue]):
         name: str,
         tasker: "Tasker[Param, RValue]",
         every: timedelta,
+        start_at: Union[datetime, None],
         args: tuple,
         kwargs: dict,
     ) -> None:
         self.name = name
         self.every = every
+        self.start_at = start_at
         self._tasker = tasker
         self._args = args
         self._kwargs = kwargs
@@ -58,18 +60,29 @@ class PeriodicTaskFactory(Generic[Param, RValue]):
     the same way calling a `Tasker` gives you a `Task`."""
 
     def __init__(
-        self, tasker: "Tasker[Param, RValue]", name: str, every: timedelta
+        self,
+        tasker: "Tasker[Param, RValue]",
+        name: str,
+        every: timedelta,
+        start_at: Union[datetime, None],
     ) -> None:
         self._tasker = tasker
         self.name = name
         self.every = every
+        self.start_at = start_at
 
     def __call__(self, *args, **kwargs) -> PeriodicTask[Param, RValue]:
-        return PeriodicTask(self.name, self._tasker, self.every, args, kwargs)
+        return PeriodicTask(
+            self.name, self._tasker, self.every, self.start_at, args, kwargs
+        )
 
 
 def periodic(
-    tasker: "Tasker[Param, RValue]", *, name: str, every: timedelta
+    tasker: "Tasker[Param, RValue]",
+    *,
+    name: str,
+    every: timedelta,
+    start_at: Union[datetime, None] = None,
 ) -> PeriodicTaskFactory[Param, RValue]:
     """Wrap a `@task`-decorated function as a fixed-interval schedule.
 
@@ -79,13 +92,19 @@ def periodic(
             dedup key in `Beat`'s own table. Changing it starts a fresh
             schedule (a new row, next due immediately).
         every (timedelta): how often to enqueue this task.
+        start_at (datetime | None, optional): the first run isn't due before
+            this timestamp. Only takes effect the first time `Beat` sees this
+            schedule's `name` (it's where the row's initial `next_run` comes
+            from); a later change to `start_at` has no effect on a schedule
+            that already has a row. Defaults to `None`, meaning due
+            immediately, same as a past `start_at` would be.
 
     Returns:
         PeriodicTaskFactory: call it with the task's own arguments (exactly
             like calling `tasker` itself) to get a `PeriodicTask` to hand to
             `Beat`.
     """
-    return PeriodicTaskFactory(tasker, name, every)
+    return PeriodicTaskFactory(tasker, name, every, start_at)
 
 
 def _generate_schedule_model(tablename: str):
@@ -134,8 +153,9 @@ class Beat:
     @_retry_on_deadlock
     def tick(self) -> int:
         """Enqueue every schedule that is currently due, and return how many
-        that was. Schedules seen for the first time are treated as due
-        immediately."""
+        that was. Schedules seen for the first time are due at their
+        `start_at` (or immediately, if `start_at` is `None` or already
+        past)."""
         now = datetime.now()
         enqueued = 0
 
@@ -148,7 +168,9 @@ class Beat:
                 )
             )
             for name in self.schedules.keys() - known:
-                session.add(self._model(name=name, next_run=now))
+                schedule = self.schedules[name]
+                first_due = schedule.start_at if schedule.start_at is not None else now
+                session.add(self._model(name=name, next_run=first_due))
             session.commit()
 
             for schedule in self.schedules.values():
