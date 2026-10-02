@@ -20,8 +20,13 @@ through `ctx.run_task()` explicitly -- see
 function" for the async version of the same sugar; the only difference is
 there's no `await` here, the call itself resolves (or suspends, or raises)
 synchronously.
+
+A flow function also takes no `ctx` parameter -- `step`/`wait_for`/
+`sleep_for`/`run_task` are module-level free functions here too, same as
+`flows.aio`'s "No context parameter either", just synchronous.
 """
 
+import contextvars
 import threading
 import time
 from datetime import datetime, timedelta
@@ -39,7 +44,7 @@ from typing import (
     cast,
 )
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 from ..main import AlchemicalEntry, AlchemicalTaskQueue, ClaimExpired
 from ..tasks.main import Task, Tasker, TaskException, _current_flow_runner
@@ -64,6 +69,63 @@ class FlowTaskFailed(Exception):
     def __init__(self, task_exception: TaskException):
         super().__init__(str(task_exception))
         self.task_exception = task_exception
+
+
+# See tasks.aio._current_flow_runner / flows.aio._current_context for why
+# this lives here rather than being passed as a parameter.
+_current_context: "contextvars.ContextVar[Optional[FlowContext]]" = (
+    contextvars.ContextVar("alchemical_queues_current_flow_context_sync", default=None)
+)
+
+
+def current_context() -> "FlowContext":
+    """See [flows.aio.current_context][alchemical_queues.flows.aio.current_context]."""
+    ctx = _current_context.get()
+    if ctx is None:
+        raise RuntimeError("current_context() called outside a @flow function")
+    return ctx
+
+
+def step(name: str, fn: Callable[..., RValue], *args: Any, **kwargs: Any) -> RValue:
+    """See [flows.aio.step][alchemical_queues.flows.aio.step]."""
+    return current_context().step(name, fn, *args, **kwargs)
+
+
+def wait_for(
+    name: str,
+    check: Callable[[], Optional[RValue]],
+    *,
+    retry_in: timedelta = DEFAULT_RETRY_IN,
+) -> RValue:
+    """See [flows.aio.wait_for][alchemical_queues.flows.aio.wait_for]."""
+    return current_context().wait_for(name, check, retry_in=retry_in)
+
+
+def sleep_for(duration: timedelta, *, name: Union[str, None] = None) -> None:
+    """See [flows.aio.sleep_for][alchemical_queues.flows.aio.sleep_for]."""
+    current_context().sleep_for(duration, name=name)
+
+
+def run_task(
+    name: str,
+    task: "Tasker[Any, RValue]",
+    *args: Any,
+    on_queue: Union[AlchemicalTaskQueue, None] = None,
+    poll_every: timedelta = timedelta(seconds=1),
+    **kwargs: Any,
+) -> RValue:
+    """See [flows.aio.run_task][alchemical_queues.flows.aio.run_task]."""
+    ctx = current_context()
+    resolved_queue = on_queue if on_queue is not None else ctx.task_queue
+    if resolved_queue is None:
+        raise RuntimeError(
+            f"run_task({name!r}, ...) needs an `on_queue` -- this "
+            "FlowWorker has no task_queue configured and none was passed "
+            "explicitly."
+        )
+    return ctx.run_task(
+        name, task, *args, on_queue=resolved_queue, poll_every=poll_every, **kwargs
+    )
 
 
 class FlowContext:
@@ -132,13 +194,25 @@ class FlowContext:
         return cast(RValue, value)
 
     def sleep_until(self, name: str, when: datetime) -> None:
-        """See [flows.aio.FlowContext.sleep_until][alchemical_queues.flows.aio.FlowContext.sleep_until]."""
+        """See [flows.aio.FlowContext.sleep_until][alchemical_queues.flows.aio.FlowContext.sleep_until].
+        Prefer `sleep_for` for a relative duration -- it's deterministic by
+        construction, this isn't."""
 
         def check() -> Optional[bool]:
             return True if datetime.now() >= when else None
 
         retry_in = max(timedelta(0), when - datetime.now())
         self.wait_for(name, check, retry_in=retry_in)
+
+    def sleep_for(self, duration: timedelta, *, name: Union[str, None] = None) -> None:
+        """See [flows.aio.FlowContext.sleep_for][alchemical_queues.flows.aio.FlowContext.sleep_for]."""
+        step_name = name if name is not None else self._next_auto_step_name("sleep")
+
+        def compute_deadline() -> datetime:
+            return datetime.now() + duration
+
+        deadline = self.step(f"{step_name}:deadline", compute_deadline)
+        self.sleep_until(step_name, deadline)
 
     def run_task(
         self,
@@ -259,7 +333,7 @@ class Flow(Generic[Param, RValue]):
 
     def __init__(
         self,
-        handler: Callable[Concatenate[FlowContext, Param], RValue],
+        handler: Callable[Param, RValue],
         *args: Param.args,
         **kwargs: Param.kwargs,
     ):
@@ -291,7 +365,7 @@ class Flow(Generic[Param, RValue]):
 class Flower(Generic[Param, RValue]):
     """See [flows.aio.AsyncFlower][alchemical_queues.flows.aio.AsyncFlower]."""
 
-    def __init__(self, handler: Callable[Concatenate[FlowContext, Param], RValue]):
+    def __init__(self, handler: Callable[Param, RValue]):
         self._handler = handler
 
     def __call__(
@@ -299,13 +373,13 @@ class Flower(Generic[Param, RValue]):
     ) -> Flow[Param, RValue]:
         return Flow(self._handler, *args, **kwargs)
 
-    def get_handler(self) -> Callable[Concatenate[FlowContext, Param], RValue]:
+    def get_handler(self) -> Callable[Param, RValue]:
         """Retrieve the original flow function."""
         return self._handler
 
 
 def flow(
-    function: Callable[Concatenate[FlowContext, Param], RValue],
+    function: Callable[Param, RValue],
 ) -> Flower[Param, RValue]:
     """See [flows.aio.async_flow][alchemical_queues.flows.aio.async_flow]."""
     return Flower[Param, RValue](function)
@@ -388,10 +462,11 @@ class FlowWorker:
         result: Any = None
         error: Union[BaseException, None] = None
 
+        context_token = _current_context.set(ctx)
         runner_token = _current_flow_runner.set(ctx._run_called_task)
         try:
             func = flower.get_handler()
-            result = func(ctx, *data["args"], **data["kwargs"])
+            result = func(*data["args"], **data["kwargs"])
             succeeded = True
         except FlowSuspended as exc:
             suspended = exc
@@ -404,6 +479,7 @@ class FlowWorker:
         except Exception as caught:  # pylint: disable=broad-except
             error = caught
         finally:
+            _current_context.reset(context_token)
             _current_flow_runner.reset(runner_token)
             if keepalive_thread is not None:
                 keepalive_stop.set()

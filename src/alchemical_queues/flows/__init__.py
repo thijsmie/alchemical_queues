@@ -12,7 +12,12 @@ from .main import (
     FlowSuspended,
     FlowTaskFailed,
     FlowWorker,
+    current_context,
     flow,
+    run_task,
+    sleep_for,
+    step,
+    wait_for,
 )
 
 __all__ = [
@@ -23,6 +28,11 @@ __all__ = [
     "FlowSuspended",
     "FlowTaskFailed",
     "FlowWorker",
+    "current_context",
     "flow",
+    "run_task",
+    "sleep_for",
+    "step",
+    "wait_for",
     "aio",
 ]

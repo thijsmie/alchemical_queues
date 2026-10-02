@@ -21,11 +21,12 @@ Nothing about Python coroutines survives a process crash -- there is no
 "paused stack" to pickle and resume. So instead of trying to literally
 suspend and resume a running coroutine, a flow function is *re-run from the
 top* every time its queue entry is claimed (whether that's the first claim,
-or a reclaim after a crash, or a reclaim after `ctx.wait_for`/`ctx.sleep_until`
+or a reclaim after a crash, or a reclaim after `wait_for`/`sleep_for`
 voluntarily suspended it). What makes this cheap rather than wasteful is that
 every side-effecting or non-deterministic call inside the flow goes through
-`FlowContext.step()` (or `wait_for`/`run_task`/`sleep_until`, all built on
-it), which:
+`step()` (or `wait_for`/`run_task`/`sleep_for`, all built on it -- these are
+the module-level free functions described below, thin wrappers over
+`FlowContext`'s methods of the same names), which:
 
 - the *first* time a given step `name` is reached, actually does the work and
   durably records its result (as a response row against the flow's stable
@@ -39,11 +40,15 @@ Temporal/DBOS call "durable execution", just without the bytecode-level
 determinism enforcement those use -- here, determinism is the programmer's
 responsibility: a flow function must reach the *same sequence of step names*
 on every replay given the same step results, so don't branch on `random()`,
-`datetime.now()`, etc. outside of a step.
+`datetime.now()`, etc. outside of a step. `sleep_for(duration)` below is
+deliberately *relative*, not an absolute wake time, specifically so you
+can't accidentally pass it a freshly-computed `datetime.now() + duration`
+that would be a new, different deadline on every replay -- it computes and
+memoizes the deadline internally instead.
 
 ## How suspension works, without blocking a worker
 
-`ctx.wait_for(name, check)` calls `check()` once. If it returns a real value,
+`wait_for(name, check)` calls `check()` once. If it returns a real value,
 that's recorded as the step's result, same as `step()`. If it returns `None`
 (not ready yet), `wait_for` raises `FlowSuspended` instead of looping or
 sleeping in-process -- [AsyncFlowWorker][] catches that, re-enqueues the
@@ -54,39 +59,53 @@ already uses for retries: carry the stable id forward in `data`, let the
 physical `entry_id` change) -- but it replays against the same accumulated
 step history, so resuming costs nothing beyond the suspended check itself.
 
-`ctx.run_task()` and `ctx.sleep_until()` are both just `wait_for` with a
-ready-made `check`: run_task schedules a sub-task (itself memoized as a step,
-so it's only ever scheduled once) and polls its `.done()`; sleep_until checks
-`datetime.now()` against a target.
+`run_task()` and `sleep_for()` are both just `wait_for` with a ready-made
+`check`: run_task schedules a sub-task (itself memoized as a step, so it's
+only ever scheduled once) and polls its `.done()`; sleep_for computes its
+deadline *once* (memoized as a step too -- see "No context parameter
+either") and checks `datetime.now()` against it.
 
 ## Calling a task like a plain function
 
-`ctx.run_task(name, some_task, *args, on_queue=...)` is explicit but wordy
-for the common case of "just run this task and give me its result". Give
-`AsyncFlowWorker` a `task_queue` and an `async_task`-decorated function can
-instead be awaited directly, inside a flow, exactly like any other
-coroutine:
+Give `AsyncFlowWorker` a `task_queue` and an `async_task`-decorated function
+can be awaited directly, inside a flow, exactly like any other coroutine --
+no `ctx`, no step name, no queue argument:
 
     @async_task
     async def charge_payment(info, amount): ...
 
     @async_flow
-    async def order_flow(ctx, amount):
+    async def order_flow(amount):
         charge = await charge_payment(amount)   # scheduled + durably awaited
         ...
 
-This is sugar over the same `run_task` mechanics: the step name is assigned
+This is sugar over `FlowContext.run_task`: the step name is assigned
 automatically (an incrementing counter, so it's deterministic as long as the
 flow reaches its awaited task calls in the same order every replay -- same
-requirement `step()` already has), and the sub-task always runs on the
-worker's configured `task_queue` (never the flow's own queue -- see
-`FlowContext.run_task` for why those must stay separate). Reach for
-`ctx.run_task()` explicitly instead when a call needs a specific step name
-(e.g. the same task called in a loop) or a non-default queue.
+requirement `step()`'s caller-chosen names already have), and the sub-task
+always runs on the worker's configured `task_queue` (never the flow's own
+queue -- see `run_task`'s docstring for why those must stay separate). Reach
+for the free `run_task(name, some_task, *args, on_queue=...)` function
+instead when a call needs a specific step name (e.g. the same task called in
+a loop) or a non-default queue.
 
 Outside a flow (no `AsyncFlowWorker` currently executing), awaiting a task
 this way raises `RuntimeError` -- schedule it the normal way with
 `.schedule(queue)` instead.
+
+## No context parameter either
+
+A flow function takes exactly the arguments it was called with -- no leading
+`ctx`. `step()`, `wait_for()`, `sleep_for()`, and `run_task()` are plain
+module-level functions here that find the flow currently executing (via a
+`contextvars.ContextVar` `AsyncFlowWorker._perform` sets for the duration of
+the call, the same mechanism the implicit task-call sugar above uses) rather
+than needing it threaded through every call. `current_context()` is the
+escape hatch if you need the lower-level `FlowContext` object directly (its
+`.queue`/`.flow_id`, or `.sleep_until()` for an absolute wake time rather
+than a relative duration); ordinary flow code shouldn't need it. All of
+these raise `RuntimeError` outside a flow, same as the implicit task-call
+sugar.
 
 ## Why async first
 
@@ -101,6 +120,7 @@ progress on *something*.
 """
 
 import asyncio
+import contextvars
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
@@ -117,7 +137,7 @@ from typing import (
     cast,
 )
 
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import ParamSpec
 
 from ..aio import AsyncAlchemicalTaskQueue
 from ..main import AlchemicalEntry, ClaimExpired
@@ -151,10 +171,90 @@ class FlowTaskFailed(Exception):
         self.task_exception = task_exception
 
 
+# Set by AsyncFlowWorker for the duration of a flow function's call, so the
+# free functions below (and the implicit task-call sugar in tasks.aio) can
+# find the FlowContext for the flow currently executing without it being
+# threaded through as a parameter. See the module docstring, "No context
+# parameter either".
+_current_context: "contextvars.ContextVar[Optional[FlowContext]]" = (
+    contextvars.ContextVar("alchemical_queues_current_flow_context", default=None)
+)
+
+
+def current_context() -> "FlowContext":
+    """The `FlowContext` for the flow currently executing. An escape hatch
+    for the rare case you need it directly (`.queue`, `.flow_id`,
+    `.sleep_until()` for an absolute wake time) -- ordinary flow code uses
+    `step()`/`wait_for()`/`sleep_for()`/`run_task()` instead and never needs
+    this.
+
+    Raises:
+        RuntimeError: if called outside an `async_flow` function.
+    """
+    ctx = _current_context.get()
+    if ctx is None:
+        raise RuntimeError("current_context() called outside an @async_flow function")
+    return ctx
+
+
+async def step(
+    name: str, fn: Callable[..., Awaitable[RValue]], *args: Any, **kwargs: Any
+) -> RValue:
+    """See `FlowContext.step` -- same thing, found via `current_context()`
+    so it reads as a plain function call inside a flow."""
+    return await current_context().step(name, fn, *args, **kwargs)
+
+
+async def wait_for(
+    name: str,
+    check: Callable[[], Awaitable[Optional[RValue]]],
+    *,
+    retry_in: timedelta = DEFAULT_RETRY_IN,
+) -> RValue:
+    """See `FlowContext.wait_for`."""
+    return await current_context().wait_for(name, check, retry_in=retry_in)
+
+
+async def sleep_for(duration: timedelta, *, name: Union[str, None] = None) -> None:
+    """Suspend the current flow for `duration`, relative to the moment this
+    is first reached (not to `datetime.now()` at some other, non-memoized
+    point) -- see `FlowContext.sleep_for`."""
+    await current_context().sleep_for(duration, name=name)
+
+
+async def run_task(
+    name: str,
+    task: "AsyncTasker[Any, RValue]",
+    *args: Any,
+    on_queue: Union[AsyncAlchemicalTaskQueue, None] = None,
+    poll_every: timedelta = timedelta(seconds=1),
+    **kwargs: Any,
+) -> RValue:
+    """See `FlowContext.run_task`. `on_queue` defaults to the current flow's
+    configured `task_queue` (the same one `await some_task(...)` uses) --
+    pass it explicitly only for a non-default queue."""
+    ctx = current_context()
+    resolved_queue = on_queue if on_queue is not None else ctx.task_queue
+    if resolved_queue is None:
+        raise RuntimeError(
+            f"run_task({name!r}, ...) needs an `on_queue` -- this "
+            "AsyncFlowWorker has no task_queue configured and none was "
+            "passed explicitly."
+        )
+    return await ctx.run_task(
+        name, task, *args, on_queue=resolved_queue, poll_every=poll_every, **kwargs
+    )
+
+
 class FlowContext:
-    """Passed as the first argument to every flow function. Not constructed
-    by the user -- [AsyncFlowWorker][] builds one per claim, pre-loaded with
-    whatever steps earlier runs of this same flow already completed.
+    """Holds one flow run's accumulated step history and the queues it needs
+    -- the implementation behind the free functions above
+    (`step`/`wait_for`/`sleep_for`/`run_task`/implicit task-call sugar),
+    which is what ordinary flow code uses instead of this directly. Not
+    constructed by the user -- [AsyncFlowWorker][] builds one per claim,
+    pre-loaded with whatever steps earlier runs of this same flow already
+    completed, and makes it reachable via `current_context()` for the
+    duration of the call.
     """
 
     def __init__(
@@ -240,13 +340,39 @@ class FlowContext:
 
     async def sleep_until(self, name: str, when: datetime) -> None:
         """Suspend this flow until `when`. Memoized like any other step, so
-        once `when` has passed, replays skip straight past it."""
+        once `when` has passed, replays skip straight past it.
+
+        `when` itself is **not** memoized -- it's the caller's job to make
+        sure computing it is deterministic (e.g. by computing it inside a
+        `step()` on first use, and never passing a freshly-computed
+        `datetime.now() + ...` straight in, which would pick a new deadline
+        on every replay). `sleep_for()` below does this for you for the
+        common relative-duration case; reach for `sleep_until` only when you
+        genuinely need an absolute wake time.
+        """
 
         async def check() -> Optional[bool]:
             return True if datetime.now() >= when else None
 
         retry_in = max(timedelta(0), when - datetime.now())
         await self.wait_for(name, check, retry_in=retry_in)
+
+    async def sleep_for(
+        self, duration: timedelta, *, name: Union[str, None] = None
+    ) -> None:
+        """Suspend this flow for `duration`, computed from the moment this
+        step is first reached. Unlike `sleep_until`, deterministic by
+        construction: the deadline is computed once and memoized as a step
+        (`f"{name}:deadline"`) before the suspend check uses it, so a replay
+        reuses the original deadline rather than computing a new one.
+        """
+        step_name = name if name is not None else self._next_auto_step_name("sleep")
+
+        async def compute_deadline() -> datetime:
+            return datetime.now() + duration
+
+        deadline = await self.step(f"{step_name}:deadline", compute_deadline)
+        await self.sleep_until(step_name, deadline)
 
     async def run_task(
         self,
@@ -385,7 +511,7 @@ class AsyncFlow(Generic[Param, RValue]):
 
     def __init__(
         self,
-        handler: Callable[Concatenate[FlowContext, Param], Awaitable[RValue]],
+        handler: Callable[Param, Awaitable[RValue]],
         *args: Param.args,
         **kwargs: Param.kwargs,
     ):
@@ -419,9 +545,7 @@ class AsyncFlower(Generic[Param, RValue]):
     """Container for a schedulable flow handler, mirroring
     [AsyncTasker][alchemical_queues.tasks.aio.AsyncTasker]."""
 
-    def __init__(
-        self, handler: Callable[Concatenate[FlowContext, Param], Awaitable[RValue]]
-    ):
+    def __init__(self, handler: Callable[Param, Awaitable[RValue]]):
         self._handler = handler
 
     def __call__(
@@ -429,21 +553,22 @@ class AsyncFlower(Generic[Param, RValue]):
     ) -> AsyncFlow[Param, RValue]:
         return AsyncFlow(self._handler, *args, **kwargs)
 
-    def get_handler(
-        self,
-    ) -> Callable[Concatenate[FlowContext, Param], Awaitable[RValue]]:
+    def get_handler(self) -> Callable[Param, Awaitable[RValue]]:
         """Retrieve the original async flow function."""
         return self._handler
 
 
 def async_flow(
-    function: Callable[Concatenate[FlowContext, Param], Awaitable[RValue]],
+    function: Callable[Param, Awaitable[RValue]],
 ) -> AsyncFlower[Param, RValue]:
     """Decorator to turn an `async def` function into a runnable flow, for
-    use with [AsyncFlowWorker][]. The function must take a [FlowContext][]
-    as first argument, and route every non-deterministic or side-effecting
-    operation through it (`ctx.step`, `ctx.wait_for`, `ctx.sleep_until`,
-    `ctx.run_task`) -- see the module docstring for why.
+    use with [AsyncFlowWorker][]. The function takes exactly the arguments
+    it's called with -- no framework parameter -- and routes every
+    non-deterministic or side-effecting operation through `step`,
+    `wait_for`, `sleep_for`, `run_task`, or an awaited `async_task` call
+    directly, all module-level free functions here -- see the module
+    docstring for why and how they find the running flow without it being
+    passed in.
     """
     return AsyncFlower[Param, RValue](function)
 
@@ -536,10 +661,11 @@ class AsyncFlowWorker:
         result: Any = None
         error: Union[BaseException, None] = None
 
+        context_token = _current_context.set(ctx)
         runner_token = _current_flow_runner.set(ctx._run_awaited_task)
         try:
             func = flower.get_handler()
-            result = await func(ctx, *data["args"], **data["kwargs"])
+            result = await func(*data["args"], **data["kwargs"])
             succeeded = True
         except FlowSuspended as exc:
             suspended = exc
@@ -552,6 +678,7 @@ class AsyncFlowWorker:
         except Exception as caught:  # pylint: disable=broad-except
             error = caught
         finally:
+            _current_context.reset(context_token)
             _current_flow_runner.reset(runner_token)
             if keepalive_task is not None:
                 keepalive_task.cancel()
