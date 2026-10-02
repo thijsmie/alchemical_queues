@@ -51,6 +51,41 @@ task_queue = queues.get_task_queue("task-queue")
 add_numbers(1,2).schedule(task_queue, schedule_at=now+timedelta(seconds=30))
 ```
 
+## Periodic tasks
+
+`periodic()` and `Beat` run a `@task`-decorated function on a fixed
+interval, built entirely on top of the normal queue/task API -- there's no
+separate "periodic queue" concept, `Beat` just enqueues a regular task run
+whenever one is due.
+
+```python
+from datetime import timedelta
+from alchemical_queues.tasks import TaskInfo, task
+from alchemical_queues.tasks.periodic import Beat, periodic
+
+@task
+def cleanup(info: TaskInfo, max_age_days: int) -> None:
+    ...
+
+task_queue = queues.get_task_queue("task-queue")
+schedule = periodic(cleanup, name="cleanup", every=timedelta(hours=1))(max_age_days=30)
+
+beat = Beat(engine, task_queue, [schedule])
+beat.create_all()  # creates Beat's own schedule table, once
+beat.run()          # ticks forever; run this in its own process
+```
+
+`name` is a stable identifier for the schedule (changing it starts a fresh
+one). Pass `start_at=` a `datetime` to defer the very first run; after that,
+run times stay on a fixed grid anchored at `start_at` (`start_at`,
+`start_at + every`, `start_at + 2 * every`, ...) rather than drifting later
+depending on when each `tick()` happens to run. Run several `Beat`
+processes at once for redundancy -- they never double-enqueue the same due
+run. You still need a `Worker` (or several) consuming `task_queue` to
+actually execute `cleanup` -- `Beat` only enqueues it.
+
+Only fixed intervals are supported, not cron expression syntax.
+
 ## Custom tables
 
 If you don't want to use the default queue and response tables you can configure them.

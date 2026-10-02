@@ -2,6 +2,7 @@
 
 from . import aio
 from .main import QueuedTask, Task, TaskException, TaskInfo, Worker, task
+from .periodic import Beat, PeriodicTask, periodic
 from .serializers import TaskResultSerializer
 
 __all__ = [
@@ -12,5 +13,8 @@ __all__ = [
     "TaskResultSerializer",
     "Worker",
     "task",
+    "Beat",
+    "PeriodicTask",
+    "periodic",
     "aio",
 ]
