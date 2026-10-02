@@ -20,8 +20,7 @@ All types of contributions are encouraged and valued. See the [Table of Contents
   - [Reporting Bugs](#reporting-bugs)
   - [Suggesting Enhancements](#suggesting-enhancements)
   - [Your First Code Contribution](#your-first-code-contribution)
-    - [Format your code with `black`](#format-your-code-with-black)
-    - [Rate your code style using `pylint`](#rate-your-code-style-using-pylint)
+    - [Lint and format your code with `ruff`](#lint-and-format-your-code-with-ruff)
     - [Type-check your code with `mypy`](#type-check-your-code-with-mypy)
     - [Run the testsuite with `pytest`](#run-the-testsuite-with-pytest)
 - [Attribution](#attribution)
@@ -130,30 +129,21 @@ $ uv sync --all-groups
 
 You can now make a change somewhere. For the sake of argument, lets just say you add a quick `print("Hi!")` somewhere in the code. Before you contribute this change back to the project you'll need to perform a couple steps:
 
-#### Format your code with `black`
+#### Lint and format your code with `ruff`
 
-Alchemical Queues is formatted using `black`, a zero-config code formatter. Run it like so:
-
-```sh
-$ uv run black src/
-```
-
-#### Rate your code style using `pylint`
-
-To make sure there aren't any unused imports, non-descriptive variable names or other such "code smells" you can run `pylint`.
+Alchemical Queues is linted and formatted using [`ruff`](https://docs.astral.sh/ruff/). Run it like so:
 
 ```sh
-$ uv run pylint src/alchemical_queues/
+$ uv run ruff check .
+$ uv run ruff format .
 ```
-
-Preferably, the rating should stay '10.0', unless there is a compelling reason not to.
 
 #### Type-check your code with `mypy`
 
 Type hints are an important way to communicate to the user how the Alchemical Queues API works. Use `mypy` to check it:
 
 ```sh
-$ uv run mypy .
+$ uv run mypy src
 ```
 
 #### Run the testsuite with `pytest`
