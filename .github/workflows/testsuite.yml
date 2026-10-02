@@ -15,6 +15,7 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -42,10 +43,14 @@ jobs:
       run: uv sync --all-groups
     - name: Run tests with SQLite
       run: uv run pytest -v --cov
-    - name: Install PostgreSQL driver
-      run: uv pip install psycopg2-binary
-    - name: Run tests with PostgreSQL
+    - name: Install PostgreSQL drivers
+      run: uv pip install psycopg2-binary "psycopg[binary]" pg8000
+    - name: Run tests with PostgreSQL (psycopg2)
       run: uv run pytest -v --engine "postgresql+psycopg2://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/aq_test"
+    - name: Run tests with PostgreSQL (psycopg)
+      run: uv run pytest -v --engine "postgresql+psycopg://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/aq_test"
+    - name: Run tests with PostgreSQL (pg8000)
+      run: uv run pytest -v --engine "postgresql+pg8000://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/aq_test"
     - name: Install async PostgreSQL drivers
       run: uv pip install asyncpg "psycopg[binary]"
     - name: Run async tests with PostgreSQL (asyncpg)
@@ -54,3 +59,120 @@ jobs:
       run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "postgresql+psycopg://postgres:postgres@localhost:${{ job.services.postgres.ports[5432] }}/aq_test"
     - name: Generate coverage report
       run: uv run coverage report
+
+  mysql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: aq_test
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+        ports: [ '3306:3306' ]
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+    - name: Set up Python
+      run: uv python install
+    - name: Install dependencies
+      run: uv sync --all-groups
+    - name: Install MySQL build dependencies for mysqlclient
+      run: sudo apt-get update && sudo apt-get install -y default-libmysqlclient-dev pkg-config
+    - name: Install sync MySQL drivers
+      run: uv pip install pymysql mysqlclient
+    - name: Run tests with MySQL (pymysql)
+      run: uv run pytest -v --engine "mysql+pymysql://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
+    - name: Run tests with MySQL (mysqlclient)
+      run: uv run pytest -v --engine "mysql+mysqldb://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
+    - name: Install async MySQL driver
+      run: uv pip install asyncmy
+    - name: Run async tests with MySQL (asyncmy)
+      run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mysql+asyncmy://root:root@127.0.0.1:${{ job.services.mysql.ports[3306] }}/aq_test"
+    # aiomysql is skipped: it's broken against current PyMySQL (>=1.2.3), which
+    # removed the escape_bytes_prefixed converter it still imports as a
+    # function -- see docs/usage/databases.md#driver-limitations.
+
+  mariadb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: aq_test
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+        ports: [ '3306:3306' ]
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+    - name: Set up Python
+      run: uv python install
+    - name: Install dependencies
+      run: uv sync --all-groups
+    - name: Install sync MariaDB drivers
+      run: uv pip install pymysql
+    - name: Run tests with MariaDB (pymysql)
+      run: uv run pytest -v --engine "mariadb+pymysql://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
+    - name: Install async MariaDB driver
+      run: uv pip install asyncmy
+    - name: Run async tests with MariaDB (asyncmy)
+      run: uv run pytest -v tests/test_async_main.py tests/test_async_task.py --async-engine "mariadb+asyncmy://root:root@127.0.0.1:${{ job.services.mariadb.ports[3306] }}/aq_test"
+    # aiomysql is skipped here too -- see the mysql job above.
+
+  mssql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: AlchemicalQ1
+        options: >-
+          --health-cmd="/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P AlchemicalQ1 -Q 'SELECT 1' || exit 1"
+          --health-interval=10s
+          --health-timeout=10s
+          --health-retries=10
+          --health-start-period=20s
+        ports: [ '1433:1433' ]
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+    - name: Set up Python
+      run: uv python install
+    - name: Install dependencies
+      run: uv sync --all-groups
+    - name: Install pymssql
+      run: uv pip install pymssql
+    - name: Create test database
+      run: |
+        docker exec $(docker ps -q --filter "ancestor=mcr.microsoft.com/mssql/server:2022-latest") \
+          /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P AlchemicalQ1 -Q "CREATE DATABASE aq_test"
+    - name: Run tests with MSSQL (pymssql)
+      run: uv run pytest -v --engine "mssql+pymssql://sa:AlchemicalQ1@127.0.0.1:${{ job.services.mssql.ports[1433] }}/aq_test"

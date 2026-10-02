@@ -42,6 +42,20 @@ def test_queue_name(queue: AlchemicalQueues):
     assert q.name == "test"
 
 
+def test_queue_name_too_long_rejected(queue: AlchemicalQueues):
+    with pytest.raises(ValueError):
+        queue.get("x" * 256)
+
+    with pytest.raises(ValueError):
+        queue.get_task_queue("x" * 256)
+
+
+def test_queue_name_at_the_limit_is_accepted(queue: AlchemicalQueues):
+    name = "x" * 255
+    q = queue.get(name)
+    assert q.name == name
+
+
 def test_put_get_data(queue: AlchemicalQueues):
     q = queue.get("test")
     q.put(1)

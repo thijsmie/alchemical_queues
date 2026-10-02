@@ -11,20 +11,28 @@ same atomic UPDATE/DELETE ... RETURNING pattern); only `await`/`AsyncSession`
 differ, see `.main` for why each query is shaped the way it is.
 """
 
+import asyncio
+import functools
 from datetime import datetime, timedelta
-from typing import Any, Dict, Generic, List, Type, TypeVar, Union, cast
+from typing import Any, Callable, Dict, Generic, List, Type, TypeVar, Union, cast
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
 from .main import (
+    _MAX_DEADLOCK_RETRIES,
     _SKIP_LOCKED_DIALECTS,
     AlchemicalEntry,
     AlchemicalResponse,
     ClaimExpired,
+    _deadlock_backoff,
     _generate_models,
+    _is_deadlock,
     _new_claim_token,
+    _supports_returning,
+    _validate_queue_name,
 )
 from .serializers import PickleSerializer, Serializer
 
@@ -32,6 +40,25 @@ DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 DEFAULT_SERIALIZER: Serializer[Any] = PickleSerializer()
 
 T = TypeVar("T")
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _retry_on_deadlock(fn: _F) -> _F:
+    # Async counterpart of `.main._retry_on_deadlock` -- same rationale,
+    # just awaiting the wrapped coroutine function instead of calling it.
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        for attempt in range(_MAX_DEADLOCK_RETRIES):
+            try:
+                return await fn(*args, **kwargs)
+            except OperationalError as exc:
+                if attempt == _MAX_DEADLOCK_RETRIES - 1 or not _is_deadlock(exc):
+                    raise
+                await asyncio.sleep(_deadlock_backoff(attempt))
+
+    return cast(_F, wrapper)
+
+
 R = TypeVar("R")
 
 
@@ -94,6 +121,7 @@ class AsyncAlchemicalQueues:
         async with self._engine.begin() as conn:
             await conn.run_sync(self._base.metadata.create_all)
 
+    @_retry_on_deadlock
     async def clear(self) -> None:
         """Clear all entries from all queues and task results. Might fail-silent an update call."""
         if self._engine is None:
@@ -122,6 +150,7 @@ class AsyncAlchemicalQueues:
             )
 
         if key not in self._queues:
+            _validate_queue_name(key)
             self._queues[key] = AsyncAlchemicalQueue(
                 self._engine, self._qmodel, key, serializer=serializer
             )
@@ -181,6 +210,7 @@ class AsyncAlchemicalQueues:
             )
 
         if key not in self._task_queues:
+            _validate_queue_name(key)
             self._task_queues[key] = AsyncAlchemicalTaskQueue(
                 self._engine,
                 self._qmodel,
@@ -274,6 +304,7 @@ class AsyncAlchemicalQueue(Generic[T]):
         """The name of the queue"""
         return self._name
 
+    @_retry_on_deadlock
     async def put(
         self,
         item: T,
@@ -302,6 +333,7 @@ class AsyncAlchemicalQueue(Generic[T]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     async def get(self) -> Union["AlchemicalEntry[T]", None]:
         """Get the highest priority entry out from the queue, removing it.
         See [AlchemicalQueue.get][alchemical_queues.AlchemicalQueue.get] for
@@ -313,8 +345,8 @@ class AsyncAlchemicalQueue(Generic[T]):
         timestamp = datetime.now()
 
         async with self._session() as session:
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -327,15 +359,25 @@ class AsyncAlchemicalQueue(Generic[T]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = (
-                await session.execute(
-                    delete(self._model)
-                    .where(self._model.entry_id == candidate.scalar_subquery())
-                    .returning(self._model)
-                )
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "delete"):
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = (
+                    await session.execute(
+                        delete(self._model)
+                        .where(self._model.entry_id == candidate.scalar_subquery())
+                        .returning(self._model)
+                    )
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all: lock and fetch the
+                # full candidate row first instead, then delete it by id in
+                # the same transaction. The row stays locked throughout, so
+                # the same atomicity guarantee holds.
+                item = (await session.execute(query)).scalar_one_or_none()
+                if item is not None:
+                    await session.delete(item)
 
             if item is None:
                 await session.rollback()
@@ -369,6 +411,7 @@ class AsyncAlchemicalQueue(Generic[T]):
                 )
             ) is None
 
+    @_retry_on_deadlock
     async def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
         async with self._session() as session:
@@ -419,6 +462,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
         """The default visibility_timeout this queue's `get()` calls use."""
         return self._visibility_timeout
 
+    @_retry_on_deadlock
     async def put(
         self,
         item: T,
@@ -447,6 +491,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     async def get(
         self, *, visibility_timeout: Union[timedelta, None] = None
     ) -> Union["AlchemicalEntry[T]", None]:
@@ -466,8 +511,8 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
         token = _new_claim_token()
 
         async with self._session() as session:
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -484,16 +529,29 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = (
-                await session.execute(
-                    update(self._model)
-                    .where(self._model.entry_id == candidate.scalar_subquery())
-                    .values(claimed_until=timestamp + timeout, claim_token=token)
-                    .returning(self._model)
-                )
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "update"):
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = (
+                    await session.execute(
+                        update(self._model)
+                        .where(self._model.entry_id == candidate.scalar_subquery())
+                        .values(claimed_until=timestamp + timeout, claim_token=token)
+                        .returning(self._model)
+                    )
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all, and MariaDB only
+                # supports it for DELETE/INSERT, not UPDATE: lock and fetch
+                # the full candidate row first instead, set the claim fields
+                # on the already-loaded instance, and let the session flush
+                # that as a plain UPDATE on commit. The row stays locked
+                # throughout, so the same atomicity guarantee holds.
+                item = (await session.execute(query)).scalar_one_or_none()
+                if item is not None:
+                    item.claimed_until = timestamp + timeout
+                    item.claim_token = token
 
             if item is None:
                 await session.rollback()
@@ -504,6 +562,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
 
         return entry
 
+    @_retry_on_deadlock
     async def release(self, entry_id: int, claim_token: int) -> None:
         """Release a claimed entry back to the queue. See
         [AlchemicalTaskQueue.release][alchemical_queues.AlchemicalTaskQueue.release]
@@ -529,6 +588,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     async def discard(self, entry_id: int, claim_token: int) -> None:
         """Remove a claimed entry from the queue entirely. See
         [AlchemicalTaskQueue.discard][alchemical_queues.AlchemicalTaskQueue.discard]
@@ -552,6 +612,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     async def extend(
         self,
         entry_id: int,
@@ -609,6 +670,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
                 )
             ) is None
 
+    @_retry_on_deadlock
     async def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
         async with self._session() as session:
@@ -617,6 +679,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
             )
             await session.commit()
 
+    @_retry_on_deadlock
     async def respond(
         self, entry_id: int, response: R, cleanup_at: Union[datetime, None] = None
     ) -> "AlchemicalResponse[R]":
@@ -644,6 +707,7 @@ class AsyncAlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalResponse(entry, response)
 
+    @_retry_on_deadlock
     async def responses(self, entry_id: int) -> List["AlchemicalResponse[R]"]:
         """Obtain the response(s) to a specific queue entry.
 

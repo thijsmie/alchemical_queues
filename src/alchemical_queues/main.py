@@ -1,25 +1,44 @@
 """Implementation of Alchemical Queues"""
 
+import functools
+import random
 import secrets
+import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, Generic, List, Type, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    List,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from sqlalchemy import (
     BigInteger,
     DateTime,
     Integer,
     LargeBinary,
-    Text,
+    String,
     delete,
     func,
     or_,
     select,
     update,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .serializers import PickleSerializer, Serializer
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 DEFAULT_VISIBILITY_TIMEOUT = timedelta(minutes=5)
 DEFAULT_SERIALIZER: Serializer[Any] = PickleSerializer()
@@ -30,7 +49,66 @@ R = TypeVar("R")
 
 # Dialects whose SELECT ... FOR UPDATE supports SKIP LOCKED, used to make
 # concurrent AlchemicalTaskQueue.get() calls avoid contending on the same rows.
-_SKIP_LOCKED_DIALECTS = frozenset({"postgresql", "mysql", "oracle"})
+_SKIP_LOCKED_DIALECTS = frozenset({"postgresql", "mysql", "mariadb", "oracle"})
+
+
+def _supports_returning(engine: Union[Engine, "AsyncEngine"], kind: str) -> bool:
+    """Whether this engine's dialect supports `<kind> ... RETURNING` (`kind`
+    is "delete" or "update"). This is checked per statement kind rather than
+    assumed from the dialect name: MySQL supports neither, and MariaDB
+    supports `DELETE ... RETURNING` but not `UPDATE ... RETURNING`.
+    """
+    return bool(getattr(engine.dialect, f"{kind}_returning", False))
+
+
+def _datetime_column() -> DateTime:
+    # MySQL/MariaDB's DATETIME has no fractional-second precision unless
+    # asked for explicitly (unlike PostgreSQL/SQLite, which always keep
+    # microseconds), which silently rounds every timestamp in this table to
+    # the nearest whole second -- fatal for visibility_timeout/schedule_at
+    # comparisons well under a second, and for ordering entries scheduled
+    # within the same second.
+    return DateTime(timezone=True).with_variant(
+        mysql.DATETIME(fsp=6), "mysql", "mariadb"
+    )
+
+
+_MAX_DEADLOCK_RETRIES = 8
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    # MySQL/MariaDB's InnoDB detects a deadlock between two transactions and
+    # picks one to roll back entirely with error 1213, which SQLAlchemy
+    # surfaces as a plain OperationalError -- there's no portable DBAPI
+    # exception class to catch, so this matches on the message instead. The
+    # rolled-back transaction never committed anything, so retrying the
+    # whole call from scratch is always safe. A no-op on every other
+    # backend, which never raises this message.
+    return "deadlock found" in str(exc).lower()
+
+
+def _deadlock_backoff(attempt: int) -> float:
+    # Retrying immediately after a deadlock tends to collide with the same
+    # concurrent transactions again under heavy write concurrency (several
+    # retrying writers racing back into the same gap-locked range at once)
+    # -- a small, growing random delay spreads retries out so they stop
+    # lockstepping into each other.
+    return random.uniform(0, 0.01 * (2**attempt))
+
+
+def _retry_on_deadlock(fn: _F) -> _F:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        for attempt in range(_MAX_DEADLOCK_RETRIES):
+            try:
+                return fn(*args, **kwargs)
+            except OperationalError as exc:
+                if attempt == _MAX_DEADLOCK_RETRIES - 1 or not _is_deadlock(exc):
+                    raise
+                time.sleep(_deadlock_backoff(attempt))
+
+    return cast(_F, wrapper)
 
 
 def _new_claim_token() -> int:
@@ -40,6 +118,21 @@ def _new_claim_token() -> int:
     # since moved on to someone else", even though the entry_id is identical
     # in both cases.
     return secrets.randbits(63)
+
+
+# Matches the queue_name column's String(255) -- enforced here too so a name
+# that's too long fails the same way (ValueError, at get()/get_task_queue()
+# time) on every backend, instead of succeeding on SQLite (no column length
+# limit) and only failing once it hits a write against Postgres/MySQL/MSSQL.
+QUEUE_NAME_MAX_LENGTH = 255
+
+
+def _validate_queue_name(key: str) -> None:
+    if len(key) > QUEUE_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"Queue name {key!r} is {len(key)} characters, longer than the "
+            f"{QUEUE_NAME_MAX_LENGTH}-character limit."
+        )
 
 
 class ClaimExpired(Exception):
@@ -86,13 +179,13 @@ def _generate_models(
         entry_id: Mapped[int] = mapped_column(
             Integer, primary_key=True, nullable=False, autoincrement=True
         )
-        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+        queue_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 
         enqueued_at: Mapped[datetime] = mapped_column(
-            DateTime(timezone=True), nullable=False
+            _datetime_column(), nullable=False
         )
         schedule_at: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         priority: Mapped[int] = mapped_column(Integer, nullable=False)
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
@@ -102,7 +195,7 @@ def _generate_models(
         # again, so a worker that dies mid-task doesn't lose the entry
         # silently forever.
         claimed_until: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         # A fresh random value set alongside claimed_until on every claim.
         # AlchemicalTaskQueue's release()/discard()/extend() require the
@@ -121,14 +214,14 @@ def _generate_models(
         response_id: Mapped[int] = mapped_column(
             Integer, primary_key=True, nullable=False, autoincrement=True
         )
-        queue_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+        queue_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
         entry_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
 
         delivered_at: Mapped[datetime] = mapped_column(
-            DateTime(timezone=True), nullable=False
+            _datetime_column(), nullable=False
         )
         cleanup_at: Mapped[Union[datetime, None]] = mapped_column(
-            DateTime(timezone=True), nullable=True
+            _datetime_column(), nullable=True
         )
         data: Mapped[Union[bytes, None]] = mapped_column(LargeBinary)
 
@@ -189,6 +282,7 @@ class AlchemicalQueues:
 
         self._base.metadata.create_all(self._engine)
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from all queues and task results. Might fail-silent an update call."""
 
@@ -228,6 +322,7 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._queues:
+            _validate_queue_name(key)
             self._queues[key] = AlchemicalQueue(
                 self._engine, self._qmodel, key, serializer=serializer
             )
@@ -316,6 +411,7 @@ class AlchemicalQueues:
             raise Exception("AlchemicalQueues SQLAlchemy engine was not initialized.")
 
         if key not in self._task_queues:
+            _validate_queue_name(key)
             self._task_queues[key] = AlchemicalTaskQueue(
                 self._engine,
                 self._qmodel,
@@ -445,6 +541,7 @@ class AlchemicalQueue(Generic[T]):
         """The name of the queue"""
         return self._name
 
+    @_retry_on_deadlock
     def put(
         self,
         item: T,
@@ -480,6 +577,7 @@ class AlchemicalQueue(Generic[T]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     def get(self) -> Union["AlchemicalEntry[T]", None]:
         """Get the highest priority entry out from the queue, removing it.
 
@@ -490,12 +588,8 @@ class AlchemicalQueue(Generic[T]):
         timestamp = datetime.now()
 
         with self._session() as session:
-            # Picking the candidate row and deleting it happen in one atomic
-            # DELETE ... RETURNING statement, so two concurrent get() calls
-            # can never pop the same entry, with no extra transaction
-            # isolation needed for that guarantee to hold.
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -508,13 +602,27 @@ class AlchemicalQueue(Generic[T]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = session.execute(
-                delete(self._model)
-                .where(self._model.entry_id == candidate.scalar_subquery())
-                .returning(self._model)
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "delete"):
+                # Picking the candidate row and deleting it happen in one
+                # atomic DELETE ... RETURNING statement, so two concurrent
+                # get() calls can never pop the same entry, with no extra
+                # transaction isolation needed for that guarantee to hold.
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = session.execute(
+                    delete(self._model)
+                    .where(self._model.entry_id == candidate.scalar_subquery())
+                    .returning(self._model)
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all: lock and fetch the
+                # full candidate row first instead, then delete it by id in
+                # the same transaction. The row stays locked throughout, so
+                # the same atomicity guarantee holds.
+                item = session.execute(query).scalar_one_or_none()
+                if item is not None:
+                    session.delete(item)
 
             if item is None:
                 session.rollback()
@@ -558,6 +666,7 @@ class AlchemicalQueue(Generic[T]):
                 is None
             )
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
 
@@ -622,6 +731,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         """The default visibility_timeout this queue's `get()` calls use."""
         return self._visibility_timeout
 
+    @_retry_on_deadlock
     def put(
         self,
         item: T,
@@ -657,6 +767,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalEntry(entry, item)
 
+    @_retry_on_deadlock
     def get(
         self, *, visibility_timeout: Union[timedelta, None] = None
     ) -> Union["AlchemicalEntry[T]", None]:
@@ -700,14 +811,8 @@ class AlchemicalTaskQueue(Generic[T, R]):
         token = _new_claim_token()
 
         with self._session() as session:
-            # Picking the candidate row and claiming it happen in one atomic
-            # UPDATE ... RETURNING statement, so two concurrent get() calls can
-            # never claim the same entry. This needs no special transaction
-            # isolation (previously SQLite needed a global BEGIN EXCLUSIVE,
-            # which serialized every transaction on the engine, including ones
-            # from unrelated code sharing the same engine).
-            candidate = (
-                select(self._model.entry_id)
+            query = (
+                select(self._model)
                 .filter(
                     self._model.queue_name == self._name,
                     or_(
@@ -724,14 +829,34 @@ class AlchemicalTaskQueue(Generic[T, R]):
             )
 
             if self._engine.dialect.name in _SKIP_LOCKED_DIALECTS:
-                candidate = candidate.with_for_update(skip_locked=True)
+                query = query.with_for_update(skip_locked=True)
 
-            item = session.execute(
-                update(self._model)
-                .where(self._model.entry_id == candidate.scalar_subquery())
-                .values(claimed_until=timestamp + timeout, claim_token=token)
-                .returning(self._model)
-            ).scalar_one_or_none()
+            if _supports_returning(self._engine, "update"):
+                # Picking the candidate row and claiming it happen in one
+                # atomic UPDATE ... RETURNING statement, so two concurrent
+                # get() calls can never claim the same entry. This needs no
+                # special transaction isolation (previously SQLite needed a
+                # global BEGIN EXCLUSIVE, which serialized every transaction
+                # on the engine, including ones from unrelated code sharing
+                # the same engine).
+                candidate = query.with_only_columns(self._model.entry_id)
+                item = session.execute(
+                    update(self._model)
+                    .where(self._model.entry_id == candidate.scalar_subquery())
+                    .values(claimed_until=timestamp + timeout, claim_token=token)
+                    .returning(self._model)
+                ).scalar_one_or_none()
+            else:
+                # MySQL has no RETURNING support at all, and MariaDB only
+                # supports it for DELETE/INSERT, not UPDATE: lock and fetch
+                # the full candidate row first instead, set the claim fields
+                # on the already-loaded instance, and let the session flush
+                # that as a plain UPDATE on commit. The row stays locked
+                # throughout, so the same atomicity guarantee holds.
+                item = session.execute(query).scalar_one_or_none()
+                if item is not None:
+                    item.claimed_until = timestamp + timeout
+                    item.claim_token = token
 
             if item is None:
                 session.rollback()
@@ -742,6 +867,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
         return entry
 
+    @_retry_on_deadlock
     def release(self, entry_id: int, claim_token: int) -> None:
         """Release a claimed entry back to the queue, without recording a
         response for it. The entry itself is kept -- it becomes claimable
@@ -781,6 +907,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     def discard(self, entry_id: int, claim_token: int) -> None:
         """Remove a claimed entry from the queue entirely, without recording
         a response for it. Unlike [release][alchemical_queues.AlchemicalTaskQueue.release],
@@ -812,6 +939,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise ClaimExpired(entry_id)
 
+    @_retry_on_deadlock
     def extend(
         self,
         entry_id: int,
@@ -893,6 +1021,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
                 is None
             )
 
+    @_retry_on_deadlock
     def clear(self) -> None:
         """Clear all entries from this queue. Might fail-silent an update call."""
 
@@ -902,6 +1031,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
             )
             session.commit()
 
+    @_retry_on_deadlock
     def respond(
         self, entry_id: int, response: R, cleanup_at: Union[datetime, None] = None
     ) -> "AlchemicalResponse[R]":
@@ -949,6 +1079,7 @@ class AlchemicalTaskQueue(Generic[T, R]):
 
             return AlchemicalResponse(entry, response)
 
+    @_retry_on_deadlock
     def responses(self, entry_id: int) -> List["AlchemicalResponse[R]"]:
         """Obtain the response(s) to a specific queue entry.
 
