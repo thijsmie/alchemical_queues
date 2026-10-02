@@ -44,6 +44,9 @@ nav:
       - "api/tasks/TaskInfo.md"
       - "api/tasks/TaskException.md"
       - "api/tasks/TaskResultSerializer.md"
+      - periodic: "api/tasks/periodic.md"
+      - "api/tasks/Beat.md"
+      - "api/tasks/PeriodicTask.md"
     - Async core:
       - "api/aio/AsyncAlchemicalQueues.md"
       - "api/aio/AsyncAlchemicalQueue.md"

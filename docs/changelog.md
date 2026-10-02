@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `alchemical_queues.tasks.periodic`: fixed-interval periodic ("cron-like") tasks. `periodic(my_task, name=..., every=timedelta(...))(*args, **kwargs)` wraps an existing `@task` function into a `PeriodicTask`; `Beat(engine, task_queue, [schedule, ...])` enqueues (via the normal `Task.schedule()` path) whichever schedules are due on each `tick()`/`run()`. Pass `start_at=` a `datetime` to defer a schedule's first run -- after that, run times stay on a fixed grid anchored at `start_at` rather than drifting later with each run. Due-ness lives in one small extra table (`Beat.create_all()`), advanced by a single conditional `UPDATE`, the same claim pattern `AlchemicalTaskQueue.get()` uses -- so several `Beat` processes can run at once (for redundancy) without ever double-enqueuing the same due run. **Why**: the most commonly requested gap versus Celery/rq -- scoped deliberately small (fixed intervals only, no cron expression syntax) to keep it a thin add-on over the existing queue/task API rather than a new concept. See [Periodic tasks](usage/advanced.md#periodic-tasks).
+
 ## Version 0.3.0
 
 ### Added
