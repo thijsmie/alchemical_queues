@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## Version 0.3.0
 
 ### Added
 
+- `alchemical_queues.aio`: an async counterpart to the sync API (`AsyncAlchemicalQueues`, `AsyncAlchemicalQueue[T]`, `AsyncAlchemicalTaskQueue[T, R]`) built on `sqlalchemy.ext.asyncio`, with every I/O method `async def`. `alchemical_queues.tasks.aio.AsyncWorker` runs `async def` task handlers registered via `async_task`/`AsyncTask`. Table models, entries/responses and serializers are shared unchanged with the sync implementation. Tested and CI-covered against Postgres via both `asyncpg` and `psycopg` (v3 async mode).
+- Runnable mini example apps under `examples/` -- plain Python, async plain Python, FastAPI, Flask, Starlette and Litestar -- each scheduling a task and polling for its result, rendered into the [Examples](examples/index.md) docs so they never drift from the code they show. `fastapi_app` demonstrates `TaskResultSerializer(PydanticSerializer(...))`; `flask_app` demonstrates `JsonSerializer`.
 - `Serializer`: a pluggable way to control how queue entries and task responses are turned into bytes for storage and back, instead of always using `pickle`. Pass an instance via the new `serializer=` argument of `AlchemicalQueues.get()`/`get_typed()`/`get_task_queue()`/`get_task_queue_typed()`. **Why**: pickle is fine as a default (it's what every previous version always used, unchanged), but some applications want a human-readable/interoperable wire format, or schema validation on what goes through the queue.
 - `PickleSerializer`: the existing `pickle`-based behavior, now explicit and still the default everywhere a `serializer=` isn't passed.
 - `JsonSerializer`: serializes with the standard library `json` module.

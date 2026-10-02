@@ -1,6 +1,6 @@
 [project]
 name = "alchemical_queues"
-version = "0.2.0"
+version = "0.3.0"
 description = "Task Queues on pure SQLAlchemy"
 readme = "README.md"
 license = "MIT"
