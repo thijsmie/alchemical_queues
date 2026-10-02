@@ -1,11 +1,22 @@
 """Implementation of the Alchemical Task Queues"""
 
+import contextvars
 import threading
 import time
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
-from typing import Any, Callable, Dict, Generic, NoReturn, TypeVar, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    NoReturn,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+)
 
 from typing_extensions import Concatenate, ParamSpec
 
@@ -25,6 +36,16 @@ class TaskInfo:
 
 Param = ParamSpec("Param")
 RValue = TypeVar("RValue")
+
+# Set by FlowWorker (alchemical_queues.flows.main) for the duration of a flow
+# function's call, so that `some_task(...)` inside a flow -- where
+# `some_task` is a `task`-decorated function -- resolves durably in place
+# instead of needing `Task.schedule()` spelled out. See
+# tasks.aio._current_flow_runner for the async equivalent and why this lives
+# here rather than in flows.main.
+_current_flow_runner: "contextvars.ContextVar[Optional[Callable[[Any], Any]]]" = (
+    contextvars.ContextVar("alchemical_queues_current_flow_runner_sync", default=None)
+)
 
 
 class Worker:
@@ -342,6 +363,12 @@ class Task(Generic[Param, RValue]):
         self._args = args
         self._kwargs = kwargs
 
+    @property
+    def name(self) -> str:
+        """The dotted path this task will be registered and looked up under
+        -- the same value `schedule()` stores as `data["function"]`."""
+        return f"{self._handler.__module__}.{self._handler.__qualname__}"
+
     def schedule(
         self,
         on_queue: AlchemicalTaskQueue,
@@ -362,7 +389,7 @@ class Task(Generic[Param, RValue]):
             retry_in (timedelta, optional): the minimal timespan between two tries.
         """
 
-        name = f"{self._handler.__module__}.{self._handler.__qualname__}"
+        name = self.name
         entry = on_queue.put(
             {
                 "function": name,
@@ -386,8 +413,21 @@ class Tasker(Generic[Param, RValue]):
 
     def __call__(
         self, *args: Param.args, **kwargs: Param.kwargs
-    ) -> Task[Param, RValue]:
-        return Task(self._handler, *args, **kwargs)
+    ) -> Union[Task[Param, RValue], RValue]:
+        """Normally returns a `Task` to `.schedule(queue)` yourself. Inside a
+        `flow`-decorated function, instead schedules on the flow's
+        configured task queue, durably waits for it, and returns the actual
+        result (or raises `FlowSuspended`/`FlowTaskFailed`) -- lets flow
+        bodies call a task like a plain function:
+        `charge = charge_payment(amount)`. See
+        `flows.main.FlowContext.run_task` for an explicit step name or a
+        non-default queue.
+        """
+        task = Task(self._handler, *args, **kwargs)
+        runner = _current_flow_runner.get()
+        if runner is None:
+            return task
+        return cast(RValue, runner(task))
 
     def retrieve(self, queue: AlchemicalTaskQueue, entry_id: int) -> QueuedTask[RValue]:
         """Retrieve an instance of this task that is already running."""

@@ -15,6 +15,7 @@ needs the sync [Worker][alchemical_queues.tasks.Worker] instead.
 """
 
 import asyncio
+import contextvars
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
@@ -23,8 +24,10 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Generator,
     Generic,
     NoReturn,
+    Optional,
     TypeVar,
     Union,
     cast,
@@ -38,6 +41,18 @@ from .main import TaskException, TaskInfo
 
 Param = ParamSpec("Param")
 RValue = TypeVar("RValue")
+
+# Set by AsyncFlowWorker (alchemical_queues.flows.aio) for the duration of a
+# flow function's call, so that `await some_task(...)` inside a flow -- where
+# `some_task` is an `async_task`-decorated function -- resolves durably
+# instead of needing `AsyncTask.schedule()` spelled out. Deliberately defined
+# here rather than in flows.aio to avoid flows.aio <-> tasks.aio importing
+# each other: tasks.aio knows nothing about flows, it just exposes a hook a
+# flow worker can set. Outside a flow (this is unset), awaiting an AsyncTask
+# raises -- see `AsyncTask.__await__`.
+_current_flow_runner: "contextvars.ContextVar[Optional[Callable[[AsyncTask], Awaitable[Any]]]]" = contextvars.ContextVar(
+    "alchemical_queues_current_flow_runner", default=None
+)
 
 
 class AsyncQueuedTask(Generic[RValue]):
@@ -97,6 +112,36 @@ class AsyncTask(Generic[Param, RValue]):
         self._args = args
         self._kwargs = kwargs
 
+    @property
+    def name(self) -> str:
+        """The dotted path this task will be registered and looked up under
+        -- the same value `schedule()` stores as `data["function"]`."""
+        return f"{self._handler.__module__}.{self._handler.__qualname__}"
+
+    def __await__(self) -> Generator[Any, None, RValue]:
+        """Lets a task called inside an `async_flow` function be awaited
+        directly (`result = await charge_payment(amount)`) instead of
+        spelling out `ctx.run_task(name, charge_payment, amount, on_queue=...)`
+        -- it's scheduled and durably waited on the flow's configured task
+        queue, under an automatically assigned step name. See
+        [flows.aio][alchemical_queues.flows.aio] for what "durably" buys you
+        here, and `FlowContext.run_task` if you need an explicit step name
+        or a non-default queue.
+
+        Raises:
+            RuntimeError: if awaited outside an `async_flow` function -- use
+                `.schedule(queue)` there instead, there's no implicit queue
+                to run on.
+        """
+        runner = _current_flow_runner.get()
+        if runner is None:
+            raise RuntimeError(
+                f"`{self.name}(...)` was awaited directly, but that only "
+                "works inside an @async_flow function. Outside a flow, "
+                "call `.schedule(queue)` on it instead."
+            )
+        return runner(self).__await__()
+
     async def schedule(
         self,
         on_queue: AsyncAlchemicalTaskQueue,
@@ -117,7 +162,7 @@ class AsyncTask(Generic[Param, RValue]):
             max_retries (int, optional): how many times the task should be retried before reporting failure.
             retry_in (timedelta, optional): the minimal timespan between two tries.
         """
-        name = f"{self._handler.__module__}.{self._handler.__qualname__}"
+        name = self.name
         entry = await on_queue.put(
             {
                 "function": name,

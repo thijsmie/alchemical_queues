@@ -59,6 +59,35 @@ ready-made `check`: run_task schedules a sub-task (itself memoized as a step,
 so it's only ever scheduled once) and polls its `.done()`; sleep_until checks
 `datetime.now()` against a target.
 
+## Calling a task like a plain function
+
+`ctx.run_task(name, some_task, *args, on_queue=...)` is explicit but wordy
+for the common case of "just run this task and give me its result". Give
+`AsyncFlowWorker` a `task_queue` and an `async_task`-decorated function can
+instead be awaited directly, inside a flow, exactly like any other
+coroutine:
+
+    @async_task
+    async def charge_payment(info, amount): ...
+
+    @async_flow
+    async def order_flow(ctx, amount):
+        charge = await charge_payment(amount)   # scheduled + durably awaited
+        ...
+
+This is sugar over the same `run_task` mechanics: the step name is assigned
+automatically (an incrementing counter, so it's deterministic as long as the
+flow reaches its awaited task calls in the same order every replay -- same
+requirement `step()` already has), and the sub-task always runs on the
+worker's configured `task_queue` (never the flow's own queue -- see
+`FlowContext.run_task` for why those must stay separate). Reach for
+`ctx.run_task()` explicitly instead when a call needs a specific step name
+(e.g. the same task called in a loop) or a non-default queue.
+
+Outside a flow (no `AsyncFlowWorker` currently executing), awaiting a task
+this way raises `RuntimeError` -- schedule it the normal way with
+`.schedule(queue)` instead.
+
 ## Why async first
 
 None of the above actually requires asyncio -- `wait_for` raising to let the
@@ -92,7 +121,7 @@ from typing_extensions import Concatenate, ParamSpec
 
 from ..aio import AsyncAlchemicalTaskQueue
 from ..main import AlchemicalEntry, ClaimExpired
-from ..tasks.aio import AsyncTasker
+from ..tasks.aio import AsyncTask, AsyncTasker, _current_flow_runner
 from ..tasks.main import TaskException
 
 Param = ParamSpec("Param")
@@ -133,12 +162,23 @@ class FlowContext:
         queue: AsyncAlchemicalTaskQueue,
         flow_id: int,
         history: Dict[str, Any],
+        task_queue: Union[AsyncAlchemicalTaskQueue, None] = None,
     ):
         self.flow_id = flow_id
         self.queue = queue
+        self.task_queue = task_queue
         self._queue = queue
         self._history = history
         self._seen_this_run: set = set()
+        self._auto_step_counter = 0
+
+    def _next_auto_step_name(self, hint: str) -> str:
+        # Deterministic as long as the flow reaches its awaited-task calls in
+        # the same order every replay -- same requirement `step()`'s caller-
+        # chosen names already have.
+        name = f"_auto:{self._auto_step_counter}:{hint}"
+        self._auto_step_counter += 1
+        return name
 
     async def step(
         self,
@@ -231,7 +271,24 @@ class FlowContext:
         data; a flow entry sitting in the task queue would equally confuse
         an `AsyncWorker`. Flows and the tasks they schedule always need
         separate queues.
+
+        For the common case of "just run this and give me the result",
+        `await some_task(*args, **kwargs)` inside a flow is equivalent to
+        this, using the worker's configured `task_queue` and an
+        automatically assigned step name -- see the module docstring.
         """
+        return await self._run_scheduled_task(
+            name, task(*args, **kwargs), on_queue=on_queue, poll_every=poll_every
+        )
+
+    async def _run_scheduled_task(
+        self,
+        name: str,
+        task: "AsyncTask[Any, RValue]",
+        *,
+        on_queue: AsyncAlchemicalTaskQueue,
+        poll_every: timedelta,
+    ) -> RValue:
         scheduled_key = f"{name}:scheduled"
 
         if scheduled_key in self._history:
@@ -244,7 +301,7 @@ class FlowContext:
                 )
             self._seen_this_run.add(scheduled_key)
 
-            queued = await task(*args, **kwargs).schedule(on_queue)
+            queued = await task.schedule(on_queue)
             entry_id = queued.entry_id
             await self._queue.respond(
                 self.flow_id, {"step": scheduled_key, "result": entry_id}
@@ -264,6 +321,22 @@ class FlowContext:
             raise FlowTaskFailed(TaskException(data["error"], data.get("error_type")))
 
         return cast(RValue, data.get("result") if isinstance(data, dict) else data)
+
+    async def _run_awaited_task(self, task: "AsyncTask[Any, RValue]") -> RValue:
+        # Entry point for `await some_task(...)` used directly inside a flow
+        # -- see AsyncFlowWorker._perform, which registers this as the
+        # tasks.aio contextvar runner for the duration of the flow call.
+        if self.task_queue is None:
+            raise RuntimeError(
+                f"`{task.name}(...)` was awaited directly inside a flow, but "
+                "this AsyncFlowWorker has no task_queue configured -- pass "
+                "one to AsyncFlowWorker(...), or call "
+                "`ctx.run_task(name, task, ..., on_queue=...)` explicitly."
+            )
+        name = self._next_auto_step_name(task.name)
+        return await self._run_scheduled_task(
+            name, task, on_queue=self.task_queue, poll_every=timedelta(seconds=1)
+        )
 
 
 class AsyncFlowHandle(Generic[RValue]):
@@ -383,6 +456,12 @@ class AsyncFlowWorker:
 
     Attributes:
         queue (AsyncAlchemicalTaskQueue): the queue this worker runs on.
+        task_queue (AsyncAlchemicalTaskQueue | None): the queue sub-tasks are
+            scheduled on when a flow awaits an `async_task`-decorated
+            function directly (see the module docstring's "Calling a task
+            like a plain function"), rather than going through
+            `ctx.run_task()` with an explicit `on_queue`. Must be a
+            different queue from `queue` -- never the flow's own queue.
         poll_every (timedelta): how often to poll for new flow entries when
             the queue is empty.
         keepalive_every (timedelta | None): how often to extend a flow run's
@@ -395,9 +474,11 @@ class AsyncFlowWorker:
         queue: AsyncAlchemicalTaskQueue,
         poll_every: timedelta = timedelta(seconds=1),
         *,
+        task_queue: Union[AsyncAlchemicalTaskQueue, None] = None,
         keepalive_every: Union[timedelta, None] = None,
     ):
         self.queue = queue
+        self.task_queue = task_queue
         self.poll_every = poll_every
         self.keepalive_every = keepalive_every
         self._handler_registry: Dict[str, "AsyncFlower"] = {}
@@ -444,7 +525,7 @@ class AsyncFlowWorker:
             for response in await self.queue.responses(flow_id)
             if isinstance(response.data, dict) and "step" in response.data
         }
-        ctx = FlowContext(self.queue, flow_id, history)
+        ctx = FlowContext(self.queue, flow_id, history, task_queue=self.task_queue)
 
         keepalive_task: Union["asyncio.Task[None]", None] = None
         if self.keepalive_every is not None:
@@ -455,6 +536,7 @@ class AsyncFlowWorker:
         result: Any = None
         error: Union[BaseException, None] = None
 
+        runner_token = _current_flow_runner.set(ctx._run_awaited_task)
         try:
             func = flower.get_handler()
             result = await func(ctx, *data["args"], **data["kwargs"])
@@ -470,6 +552,7 @@ class AsyncFlowWorker:
         except Exception as caught:  # pylint: disable=broad-except
             error = caught
         finally:
+            _current_flow_runner.reset(runner_token)
             if keepalive_task is not None:
                 keepalive_task.cancel()
                 try:

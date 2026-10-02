@@ -12,6 +12,14 @@ a time, so where the async worker gets to interleave many suspended flows on
 one loop "for free", getting the same concurrency here means running
 multiple `FlowWorker` instances (threads/processes) against the same queue,
 same as you would for [tasks.Worker][alchemical_queues.tasks.Worker] today.
+
+Give `FlowWorker` a `task_queue` and a `task`-decorated function can be
+called directly inside a flow, like a plain function, instead of going
+through `ctx.run_task()` explicitly -- see
+[flows.aio][alchemical_queues.flows.aio]'s "Calling a task like a plain
+function" for the async version of the same sugar; the only difference is
+there's no `await` here, the call itself resolves (or suspends, or raises)
+synchronously.
 """
 
 import threading
@@ -34,7 +42,7 @@ from typing import (
 from typing_extensions import Concatenate, ParamSpec
 
 from ..main import AlchemicalEntry, AlchemicalTaskQueue, ClaimExpired
-from ..tasks.main import Tasker, TaskException
+from ..tasks.main import Task, Tasker, TaskException, _current_flow_runner
 
 Param = ParamSpec("Param")
 RValue = TypeVar("RValue")
@@ -66,12 +74,20 @@ class FlowContext:
         queue: AlchemicalTaskQueue,
         flow_id: int,
         history: Dict[str, Any],
+        task_queue: Union[AlchemicalTaskQueue, None] = None,
     ):
         self.flow_id = flow_id
         self.queue = queue
+        self.task_queue = task_queue
         self._queue = queue
         self._history = history
         self._seen_this_run: set = set()
+        self._auto_step_counter = 0
+
+    def _next_auto_step_name(self, hint: str) -> str:
+        name = f"_auto:{self._auto_step_counter}:{hint}"
+        self._auto_step_counter += 1
+        return name
 
     def step(
         self,
@@ -136,7 +152,29 @@ class FlowContext:
         """See [flows.aio.FlowContext.run_task][alchemical_queues.flows.aio.FlowContext.run_task].
         `on_queue` must be a *different* queue from `ctx.queue`, serviced by
         a plain [Worker][alchemical_queues.tasks.Worker] -- never this
-        flow's own queue; see the async version's docstring for why."""
+        flow's own queue; see the async version's docstring for why.
+
+        Builds the `Task` via `task.get_handler()` rather than calling
+        `task(*args, **kwargs)` directly -- a flow function is already
+        running with the implicit-task-call sugar active (see module
+        docstring), so a plain call here would recurse into that instead of
+        the explicit scheduling this method is for.
+        """
+        return self._run_scheduled_task(
+            name,
+            Task(task.get_handler(), *args, **kwargs),
+            on_queue=on_queue,
+            poll_every=poll_every,
+        )
+
+    def _run_scheduled_task(
+        self,
+        name: str,
+        task: "Task[Any, RValue]",
+        *,
+        on_queue: AlchemicalTaskQueue,
+        poll_every: timedelta,
+    ) -> RValue:
         scheduled_key = f"{name}:scheduled"
 
         if scheduled_key in self._history:
@@ -149,7 +187,7 @@ class FlowContext:
                 )
             self._seen_this_run.add(scheduled_key)
 
-            queued = task(*args, **kwargs).schedule(on_queue)
+            queued = task.schedule(on_queue)
             entry_id = queued.entry_id
             self._queue.respond(
                 self.flow_id, {"step": scheduled_key, "result": entry_id}
@@ -169,6 +207,22 @@ class FlowContext:
             raise FlowTaskFailed(TaskException(data["error"], data.get("error_type")))
 
         return cast(RValue, data.get("result") if isinstance(data, dict) else data)
+
+    def _run_called_task(self, task: "Task[Any, RValue]") -> RValue:
+        # Entry point for `some_task(...)` called directly inside a flow --
+        # see FlowWorker._perform, which registers this as the tasks.main
+        # contextvar runner for the duration of the flow call.
+        if self.task_queue is None:
+            raise RuntimeError(
+                f"`{task.name}(...)` was called directly inside a flow, but "
+                "this FlowWorker has no task_queue configured -- pass one "
+                "to FlowWorker(...), or call "
+                "`ctx.run_task(name, task, ..., on_queue=...)` explicitly."
+            )
+        name = self._next_auto_step_name(task.name)
+        return self._run_scheduled_task(
+            name, task, on_queue=self.task_queue, poll_every=timedelta(seconds=1)
+        )
 
 
 class FlowHandle(Generic[RValue]):
@@ -265,9 +319,11 @@ class FlowWorker:
         queue: AlchemicalTaskQueue,
         poll_every: timedelta = timedelta(seconds=1),
         *,
+        task_queue: Union[AlchemicalTaskQueue, None] = None,
         keepalive_every: Union[timedelta, None] = None,
     ):
         self.queue = queue
+        self.task_queue = task_queue
         self.poll_every = poll_every
         self.keepalive_every = keepalive_every
         self._handler_registry: Dict[str, "Flower"] = {}
@@ -315,7 +371,7 @@ class FlowWorker:
             for response in self.queue.responses(flow_id)
             if isinstance(response.data, dict) and "step" in response.data
         }
-        ctx = FlowContext(self.queue, flow_id, history)
+        ctx = FlowContext(self.queue, flow_id, history, task_queue=self.task_queue)
 
         keepalive_stop = threading.Event()
         keepalive_thread = None
@@ -332,6 +388,7 @@ class FlowWorker:
         result: Any = None
         error: Union[BaseException, None] = None
 
+        runner_token = _current_flow_runner.set(ctx._run_called_task)
         try:
             func = flower.get_handler()
             result = func(ctx, *data["args"], **data["kwargs"])
@@ -347,6 +404,7 @@ class FlowWorker:
         except Exception as caught:  # pylint: disable=broad-except
             error = caught
         finally:
+            _current_flow_runner.reset(runner_token)
             if keepalive_thread is not None:
                 keepalive_stop.set()
                 keepalive_thread.join()
