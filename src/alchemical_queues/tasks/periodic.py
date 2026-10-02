@@ -8,12 +8,17 @@ on each `tick()`, enqueues (via the normal `Task.schedule()` path) whichever
 ones are due. "Due" is tracked in one tiny extra table keyed by schedule
 name, so running several `Beat` processes at once (for redundancy) never
 double-enqueues a run: advancing a schedule's `next_run` is a conditional
-`UPDATE` keyed on the exact value just read, so only one concurrent
-transaction can win -- the same compare-and-swap `AlchemicalTaskQueue.get()`
-already relies on to hand each entry to exactly one claimant. Each advance
-adds one `every` to the schedule's own previous `next_run` (never to the
-current time), so run times stay on a fixed grid anchored at `start_at`
-instead of drifting later with each run.
+`UPDATE` keyed on an integer `version` column read moments before (bumped
+on every advance), so only one concurrent transaction can win -- the same
+compare-and-swap `AlchemicalTaskQueue.get()` already relies on to hand each
+entry to exactly one claimant. (The CAS key is `version`, not `next_run`
+itself, specifically to avoid round-tripping a `datetime` through a
+backend's wire format and back as an equality check -- MySQL/MariaDB's
+`DATETIME(6)` doesn't always come back bit-identical to what was sent,
+which silently broke every advance after the first.) Each advance adds one
+`every` to the schedule's own previous `next_run` (never to the current
+time), so run times stay on a fixed grid anchored at `start_at` instead of
+drifting later with each run.
 
 This is intentionally minimal -- fixed-interval schedules only, no cron
 expression syntax. A cron string could be layered on top later (parsed down
@@ -25,7 +30,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Generic, List, NoReturn, Union
 
-from sqlalchemy import String, select, update
+from sqlalchemy import Integer, String, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -119,6 +124,10 @@ def _generate_schedule_model(tablename: str):
 
         name: Mapped[str] = mapped_column(String(255), primary_key=True)
         next_run: Mapped[datetime] = mapped_column(_datetime_column(), nullable=False)
+        # The compare-and-swap key for tick()'s conditional UPDATE -- see
+        # the module docstring for why this is a plain integer rather than
+        # matching on next_run's own value.
+        version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     return Schedule
 
@@ -185,31 +194,35 @@ class Beat:
                 session.add(self._model(name=name, next_run=first_due))
             session.commit()
 
-            next_runs: Dict[str, datetime] = dict(
-                session.execute(
-                    select(self._model.name, self._model.next_run).where(
-                        self._model.name.in_(self.schedules.keys())
-                    )
+            rows: Dict[str, tuple] = {
+                name: (next_run, version)
+                for name, next_run, version in session.execute(
+                    select(
+                        self._model.name, self._model.next_run, self._model.version
+                    ).where(self._model.name.in_(self.schedules.keys()))
                 ).all()
-            )
+            }
 
             for schedule in self.schedules.values():
-                current_next_run = next_runs[schedule.name]
+                current_next_run, current_version = rows[schedule.name]
                 if current_next_run > now:
                     continue
 
-                # A conditional UPDATE keyed on the exact next_run value we
-                # just read acts as a compare-and-swap: if another Beat
-                # process already advanced this schedule since our read,
-                # this matches zero rows instead of advancing (and firing)
-                # it a second time for the same grid step.
+                # A conditional UPDATE keyed on the version we just read acts
+                # as a compare-and-swap: if another Beat process already
+                # advanced this schedule since our read, this matches zero
+                # rows instead of advancing (and firing) it a second time for
+                # the same grid step.
                 result = session.execute(
                     update(self._model)
                     .where(
                         self._model.name == schedule.name,
-                        self._model.next_run == current_next_run,
+                        self._model.version == current_version,
                     )
-                    .values(next_run=current_next_run + schedule.every)
+                    .values(
+                        next_run=current_next_run + schedule.every,
+                        version=current_version + 1,
+                    )
                 )
                 session.commit()
 
