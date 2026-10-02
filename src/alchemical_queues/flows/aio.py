@@ -21,12 +21,12 @@ Nothing about Python coroutines survives a process crash -- there is no
 "paused stack" to pickle and resume. So instead of trying to literally
 suspend and resume a running coroutine, a flow function is *re-run from the
 top* every time its queue entry is claimed (whether that's the first claim,
-or a reclaim after a crash, or a reclaim after `wait_for`/`sleep_for`
+or a reclaim after a crash, or a reclaim after `wait_for`/`until`
 voluntarily suspended it). What makes this cheap rather than wasteful is that
 every side-effecting or non-deterministic call inside the flow goes through
-`step()` (or `wait_for`/`run_task`/`sleep_for`, all built on it -- these are
-the module-level free functions described below, thin wrappers over
-`FlowContext`'s methods of the same names), which:
+`step()` (or `wait_for`/`run_task`/`until`/`now`/`random`/`randint`, all
+built on it -- these are the module-level free functions described below,
+thin wrappers over `FlowContext`'s methods of the same names), which:
 
 - the *first* time a given step `name` is reached, actually does the work and
   durably records its result (as a response row against the flow's stable
@@ -39,12 +39,10 @@ between steps; every step itself runs exactly once. This is the same idea
 Temporal/DBOS call "durable execution", just without the bytecode-level
 determinism enforcement those use -- here, determinism is the programmer's
 responsibility: a flow function must reach the *same sequence of step names*
-on every replay given the same step results, so don't branch on `random()`,
-`datetime.now()`, etc. outside of a step. `sleep_for(duration)` below is
-deliberately *relative*, not an absolute wake time, specifically so you
-can't accidentally pass it a freshly-computed `datetime.now() + duration`
-that would be a new, different deadline on every replay -- it computes and
-memoizes the deadline internally instead.
+on every replay given the same step results, so don't call the real
+`datetime.now()`/`random.random()` directly in a flow body, outside of a
+step -- use this module's `now()`/`random()`/`randint()` instead, which
+memoize their result the same way `until()` memoizes its deadline.
 
 ## How suspension works, without blocking a worker
 
@@ -59,53 +57,78 @@ already uses for retries: carry the stable id forward in `data`, let the
 physical `entry_id` change) -- but it replays against the same accumulated
 step history, so resuming costs nothing beyond the suspended check itself.
 
-`run_task()` and `sleep_for()` are both just `wait_for` with a ready-made
-`check`: run_task schedules a sub-task (itself memoized as a step, so it's
-only ever scheduled once) and polls its `.done()`; sleep_for computes its
-deadline *once* (memoized as a step too -- see "No context parameter
-either") and checks `datetime.now()` against it.
+`run_task()`, `until()`, and calling a nested `@async_flow` (below) are
+all just `wait_for` with a ready-made `check`.
 
-## Calling a task like a plain function
+## A task stays a task
 
-Give `AsyncFlowWorker` a `task_queue` and an `async_task`-decorated function
-can be awaited directly, inside a flow, exactly like any other coroutine --
-no `ctx`, no step name, no queue argument:
+Calling an `async_task`-decorated function inside a flow works exactly like
+calling it anywhere else: you get back an `AsyncTask` to `.schedule(queue)`
+yourself, or feed to `run_task()` below if you want it scheduled and durably
+waited on as one step. There's deliberately no magic that makes
+`await charge_payment(amount)` alone schedule anything -- a task is a task,
+in or out of a flow; only `run_task()`, or calling another *flow*, get the
+durable-wait treatment:
 
     @async_task
     async def charge_payment(info, amount): ...
 
     @async_flow
     async def order_flow(amount):
-        charge = await charge_payment(amount)   # scheduled + durably awaited
+        charge = await run_task("charge", charge_payment, amount)
         ...
 
-This is sugar over `FlowContext.run_task`: the step name is assigned
-automatically (an incrementing counter, so it's deterministic as long as the
-flow reaches its awaited task calls in the same order every replay -- same
-requirement `step()`'s caller-chosen names already have), and the sub-task
-always runs on the worker's configured `task_queue` (never the flow's own
-queue -- see `run_task`'s docstring for why those must stay separate). Reach
-for the free `run_task(name, some_task, *args, on_queue=...)` function
-instead when a call needs a specific step name (e.g. the same task called in
-a loop) or a non-default queue.
+`run_task(name, some_task, *args, on_queue=...)` schedules `some_task` the
+first time this step is reached (itself memoized as a step, so it's only
+ever scheduled once) and suspends the flow until it completes, polling via
+`.done()`. `on_queue` defaults to the worker's configured `task_queue`; pass
+it explicitly for a non-default queue. It must be a *different* queue from
+the flow's own (`AsyncFlowWorker.get()` claims whatever entry is next
+regardless of shape, so a task entry sitting in the flow queue -- or a flow
+entry sitting in the task queue -- would get claimed and crash the wrong
+worker).
 
-Outside a flow (no `AsyncFlowWorker` currently executing), awaiting a task
-this way raises `RuntimeError` -- schedule it the normal way with
+## Calling a flow from a flow gets the magic instead
+
+A *nested* `@async_flow` call is where the durable-wait sugar lives: calling
+one flow from inside another schedules the sub-flow and durably awaits its
+final result, with no `run_task`-style wrapping needed, because a flow entry
+is shaped exactly like any other flow entry and can run on the *same* flow
+queue under the *same* `AsyncFlowWorker` pool -- no separate queue needed,
+unlike tasks:
+
+    @async_flow
+    async def charge_and_notify(amount, email): ...
+
+    @async_flow
+    async def order_flow(amount, email):
+        receipt = await charge_and_notify(amount, email)   # durably awaited
+        ...
+
+This is sugar over scheduling the sub-flow on `current_context().queue` and
+waiting for its "final" response, under an automatically assigned step name
+(same incrementing-counter scheme `run_task`'s implicit task-call sugar used
+to use -- deterministic as long as the flow reaches its nested-flow calls in
+the same order every replay). A sub-flow that raises surfaces as
+`FlowFailed` here, so the parent can catch, compensate, or let it propagate.
+
+Outside a flow (no `AsyncFlowWorker` currently executing), awaiting a flow
+call this way raises `RuntimeError` -- schedule it the normal way with
 `.schedule(queue)` instead.
 
 ## No context parameter either
 
 A flow function takes exactly the arguments it was called with -- no leading
-`ctx`. `step()`, `wait_for()`, `sleep_for()`, and `run_task()` are plain
-module-level functions here that find the flow currently executing (via a
-`contextvars.ContextVar` `AsyncFlowWorker._perform` sets for the duration of
-the call, the same mechanism the implicit task-call sugar above uses) rather
-than needing it threaded through every call. `current_context()` is the
-escape hatch if you need the lower-level `FlowContext` object directly (its
-`.queue`/`.flow_id`, or `.sleep_until()` for an absolute wake time rather
-than a relative duration); ordinary flow code shouldn't need it. All of
-these raise `RuntimeError` outside a flow, same as the implicit task-call
-sugar.
+`ctx`. `step()`, `wait_for()`, `until()`, `run_task()`, `now()`,
+`random()`, and `randint()` are plain module-level functions here that find
+the flow currently executing (via a `contextvars.ContextVar`
+`AsyncFlowWorker._perform` sets for the duration of the call, the same
+mechanism the nested-flow sugar above uses) rather than needing it threaded
+through every call. `current_context()` is the escape hatch if you need the
+lower-level `FlowContext` object directly (its `.queue`/`.flow_id`, or
+`.until()`, which works the same as its free-function counterpart, just
+found via this object instead); ordinary flow code shouldn't need it. All of
+these raise `RuntimeError` outside a flow.
 
 ## Why async first
 
@@ -121,6 +144,7 @@ progress on *something*.
 
 import asyncio
 import contextvars
+import random as _random
 from datetime import datetime, timedelta
 from logging import getLogger
 from pydoc import locate
@@ -129,6 +153,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    Generator,
     Generic,
     NoReturn,
     Optional,
@@ -141,7 +166,7 @@ from typing_extensions import ParamSpec
 
 from ..aio import AsyncAlchemicalTaskQueue
 from ..main import AlchemicalEntry, ClaimExpired
-from ..tasks.aio import AsyncTask, AsyncTasker, _current_flow_runner
+from ..tasks.aio import AsyncTasker
 from ..tasks.main import TaskException
 
 Param = ParamSpec("Param")
@@ -171,22 +196,43 @@ class FlowTaskFailed(Exception):
         self.task_exception = task_exception
 
 
+class FlowFailed(Exception):
+    """Raised when a nested `@async_flow` call (awaited directly, see the
+    module docstring's "Calling a flow from a flow") finished with an error,
+    so the parent flow can `except` it, retry, compensate, or let it
+    propagate and fail in turn."""
+
+    def __init__(self, message: str, error_type: Union[str, None] = None):
+        super().__init__(message)
+        self.message = message
+        self.error_type = error_type
+
+
 # Set by AsyncFlowWorker for the duration of a flow function's call, so the
-# free functions below (and the implicit task-call sugar in tasks.aio) can
-# find the FlowContext for the flow currently executing without it being
-# threaded through as a parameter. See the module docstring, "No context
-# parameter either".
+# free functions below (and the nested-flow-call sugar) can find the
+# FlowContext for the flow currently executing without it being threaded
+# through as a parameter. See the module docstring, "No context parameter
+# either".
 _current_context: "contextvars.ContextVar[Optional[FlowContext]]" = (
     contextvars.ContextVar("alchemical_queues_current_flow_context", default=None)
+)
+
+# Set alongside _current_context, used only by AsyncFlow.__await__ -- see
+# "Calling a flow from a flow" in the module docstring. Kept separate from
+# tasks.aio (which has no equivalent any more: a task stays a task) so that
+# awaiting a *task* directly is a plain Python TypeError, not something this
+# module tries to interpret.
+_current_subflow_runner: "contextvars.ContextVar[Optional[Callable[[AsyncFlow], Awaitable[Any]]]]" = contextvars.ContextVar(
+    "alchemical_queues_current_subflow_runner", default=None
 )
 
 
 def current_context() -> "FlowContext":
     """The `FlowContext` for the flow currently executing. An escape hatch
     for the rare case you need it directly (`.queue`, `.flow_id`,
-    `.sleep_until()` for an absolute wake time) -- ordinary flow code uses
-    `step()`/`wait_for()`/`sleep_for()`/`run_task()` instead and never needs
-    this.
+    `.until()`) -- ordinary flow code uses
+    `step()`/`wait_for()`/`until()`/`run_task()`/`now()`/`random()`
+    instead and never needs this.
 
     Raises:
         RuntimeError: if called outside an `async_flow` function.
@@ -215,11 +261,13 @@ async def wait_for(
     return await current_context().wait_for(name, check, retry_in=retry_in)
 
 
-async def sleep_for(duration: timedelta, *, name: Union[str, None] = None) -> None:
-    """Suspend the current flow for `duration`, relative to the moment this
-    is first reached (not to `datetime.now()` at some other, non-memoized
-    point) -- see `FlowContext.sleep_for`."""
-    await current_context().sleep_for(duration, name=name)
+async def until(
+    when: Union[timedelta, datetime], *, name: Union[str, None] = None
+) -> None:
+    """Suspend the current flow until `when` -- a `timedelta` (relative to
+    the moment this is first reached) or a `datetime` (an absolute wake
+    time) -- see `FlowContext.until`."""
+    await current_context().until(when, name=name)
 
 
 async def run_task(
@@ -231,8 +279,7 @@ async def run_task(
     **kwargs: Any,
 ) -> RValue:
     """See `FlowContext.run_task`. `on_queue` defaults to the current flow's
-    configured `task_queue` (the same one `await some_task(...)` uses) --
-    pass it explicitly only for a non-default queue."""
+    configured `task_queue` -- pass it explicitly for a non-default queue."""
     ctx = current_context()
     resolved_queue = on_queue if on_queue is not None else ctx.task_queue
     if resolved_queue is None:
@@ -246,15 +293,31 @@ async def run_task(
     )
 
 
+async def now(*, name: Union[str, None] = None) -> datetime:
+    """`datetime.now()`, but memoized as a step the first time it's reached
+    so every replay of this flow sees the same value -- see `FlowContext.now`."""
+    return await current_context().now(name=name)
+
+
+async def random(*, name: Union[str, None] = None) -> float:
+    """`random.random()`, but memoized as a step -- see
+    `FlowContext.random`."""
+    return await current_context().random(name=name)
+
+
+async def randint(a: int, b: int, *, name: Union[str, None] = None) -> int:
+    """`random.randint(a, b)`, but memoized as a step -- see
+    `FlowContext.randint`."""
+    return await current_context().randint(a, b, name=name)
+
+
 class FlowContext:
     """Holds one flow run's accumulated step history and the queues it needs
-    -- the implementation behind the free functions above
-    (`step`/`wait_for`/`sleep_for`/`run_task`/implicit task-call sugar),
-    which is what ordinary flow code uses instead of this directly. Not
-    constructed by the user -- [AsyncFlowWorker][] builds one per claim,
-    pre-loaded with whatever steps earlier runs of this same flow already
-    completed, and makes it reachable via `current_context()` for the
-    duration of the call.
+    -- the implementation behind the free functions above, which is what
+    ordinary flow code uses instead of this directly. Not constructed by the
+    user -- [AsyncFlowWorker][] builds one per claim, pre-loaded with
+    whatever steps earlier runs of this same flow already completed, and
+    makes it reachable via `current_context()` for the duration of the call.
     """
 
     def __init__(
@@ -273,9 +336,10 @@ class FlowContext:
         self._auto_step_counter = 0
 
     def _next_auto_step_name(self, hint: str) -> str:
-        # Deterministic as long as the flow reaches its awaited-task calls in
-        # the same order every replay -- same requirement `step()`'s caller-
-        # chosen names already have.
+        # Deterministic as long as the flow reaches its auto-named calls
+        # (until, now/random, nested-flow calls) in the same order every
+        # replay -- same requirement step()'s caller-chosen names already
+        # have.
         name = f"_auto:{self._auto_step_counter}:{hint}"
         self._auto_step_counter += 1
         return name
@@ -338,41 +402,76 @@ class FlowContext:
         self._history[name] = value
         return cast(RValue, value)
 
-    async def sleep_until(self, name: str, when: datetime) -> None:
-        """Suspend this flow until `when`. Memoized like any other step, so
-        once `when` has passed, replays skip straight past it.
+    async def until(
+        self, when: Union[timedelta, datetime], *, name: Union[str, None] = None
+    ) -> None:
+        """Suspend this flow until `when` has passed.
 
-        `when` itself is **not** memoized -- it's the caller's job to make
-        sure computing it is deterministic (e.g. by computing it inside a
-        `step()` on first use, and never passing a freshly-computed
-        `datetime.now() + ...` straight in, which would pick a new deadline
-        on every replay). `sleep_for()` below does this for you for the
-        common relative-duration case; reach for `sleep_until` only when you
-        genuinely need an absolute wake time.
+        `when` can be:
+
+        - a `timedelta`, relative to the moment this step is first reached.
+          The deadline is computed once and memoized as a step
+          (`f"{name}:deadline"`) before the suspend check uses it, so a
+          replay reuses the original deadline rather than computing a new
+          one -- deterministic by construction.
+        - a `datetime`, an absolute wake time. **Not** memoized itself --
+          it's the caller's job to make sure computing it was deterministic
+          (e.g. via `now()`/`step()` on first use, never a freshly-computed
+          `datetime.now() + ...` passed straight in, which would pick a new
+          deadline on every replay).
+
+        Memoized like any other step, so once the deadline has passed,
+        replays skip straight past it.
         """
+        step_name = name if name is not None else self._next_auto_step_name("until")
+
+        if isinstance(when, timedelta):
+
+            async def compute_deadline() -> datetime:
+                return datetime.now() + when
+
+            deadline = await self.step(f"{step_name}:deadline", compute_deadline)
+        else:
+            deadline = when
 
         async def check() -> Optional[bool]:
-            return True if datetime.now() >= when else None
+            return True if datetime.now() >= deadline else None
 
-        retry_in = max(timedelta(0), when - datetime.now())
-        await self.wait_for(name, check, retry_in=retry_in)
+        retry_in = max(timedelta(0), deadline - datetime.now())
+        await self.wait_for(step_name, check, retry_in=retry_in)
 
-    async def sleep_for(
-        self, duration: timedelta, *, name: Union[str, None] = None
-    ) -> None:
-        """Suspend this flow for `duration`, computed from the moment this
-        step is first reached. Unlike `sleep_until`, deterministic by
-        construction: the deadline is computed once and memoized as a step
-        (`f"{name}:deadline"`) before the suspend check uses it, so a replay
-        reuses the original deadline rather than computing a new one.
-        """
-        step_name = name if name is not None else self._next_auto_step_name("sleep")
+    async def now(self, *, name: Union[str, None] = None) -> datetime:
+        """The real `datetime.now()`, called and memoized exactly once (on
+        whichever replay first reaches this step) -- safe to call from
+        anywhere in a flow body, unlike the stdlib `datetime.now()`, which
+        would return a different value on every replay and break
+        determinism (see the module docstring)."""
+        step_name = name if name is not None else self._next_auto_step_name("now")
 
-        async def compute_deadline() -> datetime:
-            return datetime.now() + duration
+        async def compute() -> datetime:
+            return datetime.now()
 
-        deadline = await self.step(f"{step_name}:deadline", compute_deadline)
-        await self.sleep_until(step_name, deadline)
+        return await self.step(step_name, compute)
+
+    async def random(self, *, name: Union[str, None] = None) -> float:
+        """`random.random()`, memoized like `now()` -- safe to call from
+        anywhere in a flow body."""
+        step_name = name if name is not None else self._next_auto_step_name("random")
+
+        async def compute() -> float:
+            return _random.random()
+
+        return await self.step(step_name, compute)
+
+    async def randint(self, a: int, b: int, *, name: Union[str, None] = None) -> int:
+        """`random.randint(a, b)`, memoized like `now()` -- safe to call
+        from anywhere in a flow body."""
+        step_name = name if name is not None else self._next_auto_step_name("randint")
+
+        async def compute() -> int:
+            return _random.randint(a, b)
+
+        return await self.step(step_name, compute)
 
     async def run_task(
         self,
@@ -397,24 +496,7 @@ class FlowContext:
         data; a flow entry sitting in the task queue would equally confuse
         an `AsyncWorker`. Flows and the tasks they schedule always need
         separate queues.
-
-        For the common case of "just run this and give me the result",
-        `await some_task(*args, **kwargs)` inside a flow is equivalent to
-        this, using the worker's configured `task_queue` and an
-        automatically assigned step name -- see the module docstring.
         """
-        return await self._run_scheduled_task(
-            name, task(*args, **kwargs), on_queue=on_queue, poll_every=poll_every
-        )
-
-    async def _run_scheduled_task(
-        self,
-        name: str,
-        task: "AsyncTask[Any, RValue]",
-        *,
-        on_queue: AsyncAlchemicalTaskQueue,
-        poll_every: timedelta,
-    ) -> RValue:
         scheduled_key = f"{name}:scheduled"
 
         if scheduled_key in self._history:
@@ -427,7 +509,7 @@ class FlowContext:
                 )
             self._seen_this_run.add(scheduled_key)
 
-            queued = await task.schedule(on_queue)
+            queued = await task(*args, **kwargs).schedule(on_queue)
             entry_id = queued.entry_id
             await self._queue.respond(
                 self.flow_id, {"step": scheduled_key, "result": entry_id}
@@ -448,21 +530,39 @@ class FlowContext:
 
         return cast(RValue, data.get("result") if isinstance(data, dict) else data)
 
-    async def _run_awaited_task(self, task: "AsyncTask[Any, RValue]") -> RValue:
-        # Entry point for `await some_task(...)` used directly inside a flow
+    async def _run_awaited_subflow(self, sub: "AsyncFlow[Any, RValue]") -> RValue:
+        # Entry point for `await some_flow(...)` used directly inside a flow
         # -- see AsyncFlowWorker._perform, which registers this as the
-        # tasks.aio contextvar runner for the duration of the flow call.
-        if self.task_queue is None:
-            raise RuntimeError(
-                f"`{task.name}(...)` was awaited directly inside a flow, but "
-                "this AsyncFlowWorker has no task_queue configured -- pass "
-                "one to AsyncFlowWorker(...), or call "
-                "`ctx.run_task(name, task, ..., on_queue=...)` explicitly."
+        # _current_subflow_runner for the duration of the flow call. Unlike
+        # tasks, a nested flow is scheduled on this flow's own queue: a flow
+        # entry is shaped the same regardless of nesting, so the same
+        # AsyncFlowWorker pool can claim and run it.
+        scheduled_key = self._next_auto_step_name(f"{sub.name}:scheduled")
+
+        if scheduled_key in self._history:
+            sub_flow_id = cast(int, self._history[scheduled_key])
+        else:
+            handle = await sub.schedule(self.queue)
+            sub_flow_id = handle.flow_id
+            await self._queue.respond(
+                self.flow_id, {"step": scheduled_key, "result": sub_flow_id}
             )
-        name = self._next_auto_step_name(task.name)
-        return await self._run_scheduled_task(
-            name, task, on_queue=self.task_queue, poll_every=timedelta(seconds=1)
-        )
+            self._history[scheduled_key] = sub_flow_id
+
+        async def check() -> Optional[Dict[str, Any]]:
+            for response in await self.queue.responses(sub_flow_id):
+                if isinstance(response.data, dict) and response.data.get("final"):
+                    return {"data": response.data}
+            return None
+
+        name = self._next_auto_step_name(f"{sub.name}:result")
+        wrapped = await self.wait_for(name, check, retry_in=timedelta(seconds=1))
+        data = wrapped["data"]
+
+        if "error" in data:
+            raise FlowFailed(data["error"], data.get("error_type"))
+
+        return cast(RValue, data.get("result"))
 
 
 class AsyncFlowHandle(Generic[RValue]):
@@ -519,6 +619,33 @@ class AsyncFlow(Generic[Param, RValue]):
         self._args = args
         self._kwargs = kwargs
 
+    @property
+    def name(self) -> str:
+        """The dotted path this flow will be registered and looked up under
+        -- the same value `schedule()` stores as `data["flow"]`."""
+        return f"{self._handler.__module__}.{self._handler.__qualname__}"
+
+    def __await__(self) -> Generator[Any, None, RValue]:
+        """Lets a flow called inside another `async_flow` function be
+        awaited directly (`receipt = await charge_and_notify(amount, email)`)
+        -- it's scheduled on the current flow's own queue and durably
+        awaited, under an automatically assigned step name. See the module
+        docstring's "Calling a flow from a flow".
+
+        Raises:
+            RuntimeError: if awaited outside an `async_flow` function -- use
+                `.schedule(queue)` there instead, there's no running flow to
+                attach this to.
+        """
+        runner = _current_subflow_runner.get()
+        if runner is None:
+            raise RuntimeError(
+                f"`{self.name}(...)` was awaited directly, but that only "
+                "works inside an @async_flow function. Outside a flow, "
+                "call `.schedule(queue)` on it instead."
+            )
+        return runner(self).__await__()
+
     async def schedule(
         self,
         on_queue: AsyncAlchemicalTaskQueue,
@@ -528,10 +655,9 @@ class AsyncFlow(Generic[Param, RValue]):
     ) -> AsyncFlowHandle[RValue]:
         """Schedule this flow to run on `on_queue`. You are expected to run
         an `AsyncFlowWorker` connected to the same queue."""
-        name = f"{self._handler.__module__}.{self._handler.__qualname__}"
         entry = await on_queue.put(
             {
-                "flow": name,
+                "flow": self.name,
                 "args": self._args,
                 "kwargs": self._kwargs,
             },
@@ -565,10 +691,10 @@ def async_flow(
     use with [AsyncFlowWorker][]. The function takes exactly the arguments
     it's called with -- no framework parameter -- and routes every
     non-deterministic or side-effecting operation through `step`,
-    `wait_for`, `sleep_for`, `run_task`, or an awaited `async_task` call
-    directly, all module-level free functions here -- see the module
-    docstring for why and how they find the running flow without it being
-    passed in.
+    `wait_for`, `until`, `run_task`, `now`/`random`/`randint`, or an
+    awaited nested `async_flow` call, all module-level free functions here
+    -- see the module docstring for why and how they find the running flow
+    without it being passed in.
     """
     return AsyncFlower[Param, RValue](function)
 
@@ -581,12 +707,11 @@ class AsyncFlowWorker:
 
     Attributes:
         queue (AsyncAlchemicalTaskQueue): the queue this worker runs on.
-        task_queue (AsyncAlchemicalTaskQueue | None): the queue sub-tasks are
-            scheduled on when a flow awaits an `async_task`-decorated
-            function directly (see the module docstring's "Calling a task
-            like a plain function"), rather than going through
-            `ctx.run_task()` with an explicit `on_queue`. Must be a
-            different queue from `queue` -- never the flow's own queue.
+            Nested flow calls are scheduled and run here too -- never a
+            separate queue, unlike tasks.
+        task_queue (AsyncAlchemicalTaskQueue | None): the default queue
+            `run_task()` schedules on when not given an explicit `on_queue`.
+            Must be a different queue from `queue`.
         poll_every (timedelta): how often to poll for new flow entries when
             the queue is empty.
         keepalive_every (timedelta | None): how often to extend a flow run's
@@ -662,7 +787,7 @@ class AsyncFlowWorker:
         error: Union[BaseException, None] = None
 
         context_token = _current_context.set(ctx)
-        runner_token = _current_flow_runner.set(ctx._run_awaited_task)
+        runner_token = _current_subflow_runner.set(ctx._run_awaited_subflow)
         try:
             func = flower.get_handler()
             result = await func(*data["args"], **data["kwargs"])
@@ -679,7 +804,7 @@ class AsyncFlowWorker:
             error = caught
         finally:
             _current_context.reset(context_token)
-            _current_flow_runner.reset(runner_token)
+            _current_subflow_runner.reset(runner_token)
             if keepalive_task is not None:
                 keepalive_task.cancel()
                 try:

@@ -1,11 +1,10 @@
 """Sync mirror of [flows.aio][alchemical_queues.flows.aio] -- built on
 [AlchemicalTaskQueue][alchemical_queues.AlchemicalTaskQueue] instead of its
 async equivalent. See that module's docstring for the durable-execution
-design (replay + step memoization) and why suspension doesn't actually need
-asyncio to avoid blocking a worker: a flow that isn't ready to progress
-raises instead of sleeping, so `FlowWorker.work()`'s loop moves on to the
-next queue entry exactly like `AsyncFlowWorker.work()` does, just without an
-event loop backing it.
+design (replay + step memoization), why suspension doesn't actually need
+asyncio to avoid blocking a worker, why a task stays a task while a nested
+flow call gets the durable-wait sugar, and the `now()`/`random()`/`randint()`
+determinism helpers -- all of it carries over unchanged, just synchronous.
 
 The one real difference: a sync `FlowWorker` is one thread doing one claim at
 a time, so where the async worker gets to interleave many suspended flows on
@@ -13,20 +12,20 @@ one loop "for free", getting the same concurrency here means running
 multiple `FlowWorker` instances (threads/processes) against the same queue,
 same as you would for [tasks.Worker][alchemical_queues.tasks.Worker] today.
 
-Give `FlowWorker` a `task_queue` and a `task`-decorated function can be
-called directly inside a flow, like a plain function, instead of going
-through `ctx.run_task()` explicitly -- see
-[flows.aio][alchemical_queues.flows.aio]'s "Calling a task like a plain
-function" for the async version of the same sugar; the only difference is
-there's no `await` here, the call itself resolves (or suspends, or raises)
-synchronously.
-
-A flow function also takes no `ctx` parameter -- `step`/`wait_for`/
-`sleep_for`/`run_task` are module-level free functions here too, same as
-`flows.aio`'s "No context parameter either", just synchronous.
+A flow function takes no `ctx` parameter -- `step`/`wait_for`/`until`/
+`run_task`/`now`/`random`/`randint` are module-level free functions here
+too, same as `flows.aio`'s "No context parameter either". A `task`-decorated
+function called inside a flow works exactly like calling it anywhere else
+(use `run_task()` for the durable-wait treatment); a nested `flow`-decorated
+call gets that treatment automatically, by calling it directly -- since
+there's no sync `await`, `Flow.__call__` does the dynamic dispatch instead:
+inside a running flow it resolves and returns the sub-flow's result
+directly (or suspends, or raises), outside one it raises `TypeError` telling
+you to `.schedule(queue)` instead.
 """
 
 import contextvars
+import random as _random
 import threading
 import time
 from datetime import datetime, timedelta
@@ -47,7 +46,7 @@ from typing import (
 from typing_extensions import ParamSpec
 
 from ..main import AlchemicalEntry, AlchemicalTaskQueue, ClaimExpired
-from ..tasks.main import Task, Tasker, TaskException, _current_flow_runner
+from ..tasks.main import Tasker, TaskException
 
 Param = ParamSpec("Param")
 RValue = TypeVar("RValue")
@@ -71,10 +70,25 @@ class FlowTaskFailed(Exception):
         self.task_exception = task_exception
 
 
-# See tasks.aio._current_flow_runner / flows.aio._current_context for why
-# this lives here rather than being passed as a parameter.
+class FlowFailed(Exception):
+    """See [flows.aio.FlowFailed][alchemical_queues.flows.aio.FlowFailed]."""
+
+    def __init__(self, message: str, error_type: Union[str, None] = None):
+        super().__init__(message)
+        self.message = message
+        self.error_type = error_type
+
+
+# See flows.aio._current_context / _current_subflow_runner for why these
+# live here rather than being passed as parameters.
 _current_context: "contextvars.ContextVar[Optional[FlowContext]]" = (
     contextvars.ContextVar("alchemical_queues_current_flow_context_sync", default=None)
+)
+
+_current_subflow_runner: "contextvars.ContextVar[Optional[Callable[['Flow'], Any]]]" = (
+    contextvars.ContextVar(
+        "alchemical_queues_current_subflow_runner_sync", default=None
+    )
 )
 
 
@@ -101,9 +115,9 @@ def wait_for(
     return current_context().wait_for(name, check, retry_in=retry_in)
 
 
-def sleep_for(duration: timedelta, *, name: Union[str, None] = None) -> None:
-    """See [flows.aio.sleep_for][alchemical_queues.flows.aio.sleep_for]."""
-    current_context().sleep_for(duration, name=name)
+def until(when: Union[timedelta, datetime], *, name: Union[str, None] = None) -> None:
+    """See [flows.aio.until][alchemical_queues.flows.aio.until]."""
+    current_context().until(when, name=name)
 
 
 def run_task(
@@ -126,6 +140,21 @@ def run_task(
     return ctx.run_task(
         name, task, *args, on_queue=resolved_queue, poll_every=poll_every, **kwargs
     )
+
+
+def now(*, name: Union[str, None] = None) -> datetime:
+    """See [flows.aio.now][alchemical_queues.flows.aio.now]."""
+    return current_context().now(name=name)
+
+
+def random(*, name: Union[str, None] = None) -> float:
+    """See [flows.aio.random][alchemical_queues.flows.aio.random]."""
+    return current_context().random(name=name)
+
+
+def randint(a: int, b: int, *, name: Union[str, None] = None) -> int:
+    """See [flows.aio.randint][alchemical_queues.flows.aio.randint]."""
+    return current_context().randint(a, b, name=name)
 
 
 class FlowContext:
@@ -193,26 +222,53 @@ class FlowContext:
         self._history[name] = value
         return cast(RValue, value)
 
-    def sleep_until(self, name: str, when: datetime) -> None:
-        """See [flows.aio.FlowContext.sleep_until][alchemical_queues.flows.aio.FlowContext.sleep_until].
-        Prefer `sleep_for` for a relative duration -- it's deterministic by
-        construction, this isn't."""
+    def until(
+        self, when: Union[timedelta, datetime], *, name: Union[str, None] = None
+    ) -> None:
+        """See [flows.aio.FlowContext.until][alchemical_queues.flows.aio.FlowContext.until]."""
+        step_name = name if name is not None else self._next_auto_step_name("until")
+
+        if isinstance(when, timedelta):
+
+            def compute_deadline() -> datetime:
+                return datetime.now() + when
+
+            deadline = self.step(f"{step_name}:deadline", compute_deadline)
+        else:
+            deadline = when
 
         def check() -> Optional[bool]:
-            return True if datetime.now() >= when else None
+            return True if datetime.now() >= deadline else None
 
-        retry_in = max(timedelta(0), when - datetime.now())
-        self.wait_for(name, check, retry_in=retry_in)
+        retry_in = max(timedelta(0), deadline - datetime.now())
+        self.wait_for(step_name, check, retry_in=retry_in)
 
-    def sleep_for(self, duration: timedelta, *, name: Union[str, None] = None) -> None:
-        """See [flows.aio.FlowContext.sleep_for][alchemical_queues.flows.aio.FlowContext.sleep_for]."""
-        step_name = name if name is not None else self._next_auto_step_name("sleep")
+    def now(self, *, name: Union[str, None] = None) -> datetime:
+        """See [flows.aio.FlowContext.now][alchemical_queues.flows.aio.FlowContext.now]."""
+        step_name = name if name is not None else self._next_auto_step_name("now")
 
-        def compute_deadline() -> datetime:
-            return datetime.now() + duration
+        def compute() -> datetime:
+            return datetime.now()
 
-        deadline = self.step(f"{step_name}:deadline", compute_deadline)
-        self.sleep_until(step_name, deadline)
+        return self.step(step_name, compute)
+
+    def random(self, *, name: Union[str, None] = None) -> float:
+        """See [flows.aio.FlowContext.random][alchemical_queues.flows.aio.FlowContext.random]."""
+        step_name = name if name is not None else self._next_auto_step_name("random")
+
+        def compute() -> float:
+            return _random.random()
+
+        return self.step(step_name, compute)
+
+    def randint(self, a: int, b: int, *, name: Union[str, None] = None) -> int:
+        """See [flows.aio.FlowContext.randint][alchemical_queues.flows.aio.FlowContext.randint]."""
+        step_name = name if name is not None else self._next_auto_step_name("randint")
+
+        def compute() -> int:
+            return _random.randint(a, b)
+
+        return self.step(step_name, compute)
 
     def run_task(
         self,
@@ -227,28 +283,7 @@ class FlowContext:
         `on_queue` must be a *different* queue from `ctx.queue`, serviced by
         a plain [Worker][alchemical_queues.tasks.Worker] -- never this
         flow's own queue; see the async version's docstring for why.
-
-        Builds the `Task` via `task.get_handler()` rather than calling
-        `task(*args, **kwargs)` directly -- a flow function is already
-        running with the implicit-task-call sugar active (see module
-        docstring), so a plain call here would recurse into that instead of
-        the explicit scheduling this method is for.
         """
-        return self._run_scheduled_task(
-            name,
-            Task(task.get_handler(), *args, **kwargs),
-            on_queue=on_queue,
-            poll_every=poll_every,
-        )
-
-    def _run_scheduled_task(
-        self,
-        name: str,
-        task: "Task[Any, RValue]",
-        *,
-        on_queue: AlchemicalTaskQueue,
-        poll_every: timedelta,
-    ) -> RValue:
         scheduled_key = f"{name}:scheduled"
 
         if scheduled_key in self._history:
@@ -261,7 +296,7 @@ class FlowContext:
                 )
             self._seen_this_run.add(scheduled_key)
 
-            queued = task.schedule(on_queue)
+            queued = task(*args, **kwargs).schedule(on_queue)
             entry_id = queued.entry_id
             self._queue.respond(
                 self.flow_id, {"step": scheduled_key, "result": entry_id}
@@ -282,21 +317,37 @@ class FlowContext:
 
         return cast(RValue, data.get("result") if isinstance(data, dict) else data)
 
-    def _run_called_task(self, task: "Task[Any, RValue]") -> RValue:
-        # Entry point for `some_task(...)` called directly inside a flow --
-        # see FlowWorker._perform, which registers this as the tasks.main
-        # contextvar runner for the duration of the flow call.
-        if self.task_queue is None:
-            raise RuntimeError(
-                f"`{task.name}(...)` was called directly inside a flow, but "
-                "this FlowWorker has no task_queue configured -- pass one "
-                "to FlowWorker(...), or call "
-                "`ctx.run_task(name, task, ..., on_queue=...)` explicitly."
+    def _run_called_subflow(self, sub: "Flow[Any, RValue]") -> RValue:
+        # Entry point for `some_flow(...)` called directly inside a flow --
+        # see FlowWorker._perform, which registers this as the
+        # _current_subflow_runner for the duration of the flow call. See
+        # flows.aio.FlowContext._run_awaited_subflow for the async twin.
+        scheduled_key = self._next_auto_step_name(f"{sub.name}:scheduled")
+
+        if scheduled_key in self._history:
+            sub_flow_id = cast(int, self._history[scheduled_key])
+        else:
+            handle = sub.schedule(self.queue)
+            sub_flow_id = handle.flow_id
+            self._queue.respond(
+                self.flow_id, {"step": scheduled_key, "result": sub_flow_id}
             )
-        name = self._next_auto_step_name(task.name)
-        return self._run_scheduled_task(
-            name, task, on_queue=self.task_queue, poll_every=timedelta(seconds=1)
-        )
+            self._history[scheduled_key] = sub_flow_id
+
+        def check() -> Optional[Dict[str, Any]]:
+            for response in self.queue.responses(sub_flow_id):
+                if isinstance(response.data, dict) and response.data.get("final"):
+                    return {"data": response.data}
+            return None
+
+        name = self._next_auto_step_name(f"{sub.name}:result")
+        wrapped = self.wait_for(name, check, retry_in=timedelta(seconds=1))
+        data = wrapped["data"]
+
+        if "error" in data:
+            raise FlowFailed(data["error"], data.get("error_type"))
+
+        return cast(RValue, data.get("result"))
 
 
 class FlowHandle(Generic[RValue]):
@@ -329,7 +380,10 @@ class FlowHandle(Generic[RValue]):
 
 
 class Flow(Generic[Param, RValue]):
-    """See [flows.aio.AsyncFlow][alchemical_queues.flows.aio.AsyncFlow]."""
+    """See [flows.aio.AsyncFlow][alchemical_queues.flows.aio.AsyncFlow]. Calling
+    a `Flow` directly (`.__call__`, not `.schedule()`) is what gets the
+    durable-wait sugar when done inside another running flow -- the sync
+    equivalent of awaiting an `AsyncFlow`, since there's no sync `await`."""
 
     def __init__(
         self,
@@ -341,6 +395,12 @@ class Flow(Generic[Param, RValue]):
         self._args = args
         self._kwargs = kwargs
 
+    @property
+    def name(self) -> str:
+        """The dotted path this flow will be registered and looked up under
+        -- the same value `schedule()` stores as `data["flow"]`."""
+        return f"{self._handler.__module__}.{self._handler.__qualname__}"
+
     def schedule(
         self,
         on_queue: AlchemicalTaskQueue,
@@ -349,10 +409,9 @@ class Flow(Generic[Param, RValue]):
         priority: int = 0,
     ) -> FlowHandle[RValue]:
         """See [flows.aio.AsyncFlow.schedule][alchemical_queues.flows.aio.AsyncFlow.schedule]."""
-        name = f"{self._handler.__module__}.{self._handler.__qualname__}"
         entry = on_queue.put(
             {
-                "flow": name,
+                "flow": self.name,
                 "args": self._args,
                 "kwargs": self._kwargs,
             },
@@ -370,8 +429,16 @@ class Flower(Generic[Param, RValue]):
 
     def __call__(
         self, *args: Param.args, **kwargs: Param.kwargs
-    ) -> Flow[Param, RValue]:
-        return Flow(self._handler, *args, **kwargs)
+    ) -> Union[Flow[Param, RValue], RValue]:
+        """Inside a running flow, calling a nested `flow`-decorated function
+        resolves and returns its result directly, durably awaited (the sync
+        twin of `AsyncFlow.__await__`). Outside a flow, returns a `Flow` to
+        `.schedule(queue)` yourself, same as always."""
+        flow_call = Flow(self._handler, *args, **kwargs)
+        runner = _current_subflow_runner.get()
+        if runner is None:
+            return flow_call
+        return runner(flow_call)
 
     def get_handler(self) -> Callable[Param, RValue]:
         """Retrieve the original flow function."""
@@ -463,7 +530,7 @@ class FlowWorker:
         error: Union[BaseException, None] = None
 
         context_token = _current_context.set(ctx)
-        runner_token = _current_flow_runner.set(ctx._run_called_task)
+        runner_token = _current_subflow_runner.set(ctx._run_called_subflow)
         try:
             func = flower.get_handler()
             result = func(*data["args"], **data["kwargs"])
@@ -480,7 +547,7 @@ class FlowWorker:
             error = caught
         finally:
             _current_context.reset(context_token)
-            _current_flow_runner.reset(runner_token)
+            _current_subflow_runner.reset(runner_token)
             if keepalive_thread is not None:
                 keepalive_stop.set()
                 keepalive_thread.join()
